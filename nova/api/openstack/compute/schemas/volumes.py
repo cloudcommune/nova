@@ -74,7 +74,9 @@ create_volume_attachment = {
                     # NOTE: The validation pattern from match_device() in
                     #       nova/block_device.py.
                     'pattern': '(^/dev/x{0,1}[a-z]{0,1}d{0,1})([a-z]+)[0-9]*$'
-                }
+                },
+                'readonly': parameter_types.boolean,
+               'qos_specs': parameter_types.qos_specs,
             },
             'required': ['volumeId'],
             'additionalProperties': False,

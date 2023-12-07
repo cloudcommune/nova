@@ -39,8 +39,6 @@ class NUMAServersTestBase(base.ServersTestBase):
     def setUp(self):
         super(NUMAServersTestBase, self).setUp()
 
-        self.ctxt = nova_context.get_admin_context()
-
         # Mock the 'NUMATopologyFilter' filter, as most tests need to inspect
         # this
         host_manager = self.scheduler.manager.driver.host_manager
@@ -186,7 +184,8 @@ class NUMAServersTest(NUMAServersTestBase):
 
         server = self._run_build_test(flavor_id, expected_usage=expected_usage)
 
-        inst = objects.Instance.get_by_uuid(self.ctxt, server['id'])
+        ctx = nova_context.get_admin_context()
+        inst = objects.Instance.get_by_uuid(ctx, server['id'])
         self.assertEqual(1, len(inst.numa_topology.cells))
         self.assertEqual(5, inst.numa_topology.cells[0].cpu_topology.cores)
 
@@ -216,46 +215,6 @@ class NUMAServersTest(NUMAServersTestBase):
         expected_usage = {'DISK_GB': 20, 'MEMORY_MB': 2048, 'VCPU': 2}
 
         self._run_build_test(flavor_id, expected_usage=expected_usage)
-
-    def test_create_server_with_isolate_thread_policy_old_configuration(self):
-        """Create a server with the legacy 'hw:cpu_thread_policy=isolate' extra
-        spec and configuration.
-
-        This should pass and result in an instance consuming $flavor.vcpu host
-        cores plus the thread sibling(s) of each of these cores. We also be
-        consuming VCPUs since we're on legacy configuration here, though that
-        would in theory be fixed during a later reshape.
-        """
-        self.flags(
-            cpu_dedicated_set=None, cpu_shared_set=None, group='compute')
-        self.flags(vcpu_pin_set='0-3')
-
-        # host has hyperthreads, which means we're going to end up consuming
-        # $flavor.vcpu hosts cores plus the thread sibling(s) for each core
-        host_info = fakelibvirt.HostInfo(
-            cpu_nodes=1, cpu_sockets=1, cpu_cores=2, cpu_threads=2,
-            kB_mem=(1024 * 1024 * 16),  # GB
-        )
-        fake_connection = self._get_connection(host_info=host_info)
-        self.mock_conn.return_value = fake_connection
-
-        extra_spec = {
-            'hw:cpu_policy': 'dedicated',
-            'hw:cpu_thread_policy': 'isolate',
-        }
-        flavor_id = self._create_flavor(vcpu=2, extra_spec=extra_spec)
-
-        expected_usage = {'DISK_GB': 20, 'MEMORY_MB': 2048, 'VCPU': 2}
-        self._run_build_test(flavor_id, expected_usage=expected_usage)
-
-        # verify that we have consumed two cores plus the thread sibling of
-        # each core, totalling four cores since the HostInfo indicates each
-        # core should have two threads
-        ctxt = nova_context.get_admin_context()
-        host_numa = objects.NUMATopology.obj_from_db_obj(
-            objects.ComputeNode.get_by_nodename(ctxt, 'compute1').numa_topology
-        )
-        self.assertEqual({0, 1, 2, 3}, host_numa.cells[0].pinned_cpus)
 
     def test_create_server_with_legacy_pinning_policy_fails(self):
         """Create a pinned instance on a host with no PCPUs.
@@ -318,32 +277,6 @@ class NUMAServersTest(NUMAServersTestBase):
         ex = self.assertRaises(client.OpenStackApiException,
             self.api.post_server, post)
         self.assertEqual(403, ex.response.status_code)
-
-    def test_create_server_with_isolate_thread_policy_fails(self):
-        """Create a server with the legacy 'hw:cpu_thread_policy=isolate' extra
-        spec.
-
-        This should fail on a host with hyperthreading.
-        """
-        self.flags(
-            cpu_dedicated_set='0-3', cpu_shared_set='4-7', group='compute')
-        self.flags(vcpu_pin_set=None)
-
-        # host has hyperthreads, which means it should be rejected
-        host_info = fakelibvirt.HostInfo(
-            cpu_nodes=2, cpu_sockets=1, cpu_cores=2, cpu_threads=2,
-            kB_mem=(1024 * 1024 * 16),  # GB
-        )
-        fake_connection = self._get_connection(host_info=host_info)
-        self.mock_conn.return_value = fake_connection
-
-        extra_spec = {
-            'hw:cpu_policy': 'dedicated',
-            'hw:cpu_thread_policy': 'isolate',
-        }
-        flavor_id = self._create_flavor(vcpu=2, extra_spec=extra_spec)
-
-        self._run_build_test(flavor_id, end_status='ERROR')
 
     def test_create_server_with_pcpu(self):
         """Create a server using an explicit 'resources:PCPU' request.
@@ -429,114 +362,6 @@ class NUMAServersTest(NUMAServersTestBase):
         ex = self.assertRaises(client.OpenStackApiException,
             self.api.post_server, post)
         self.assertEqual(403, ex.response.status_code)
-
-    def _inspect_filter_numa_topology(self, cell_count):
-        """Helper function used by test_resize_server_with_numa* tests."""
-        args, kwargs = self.mock_filter.call_args_list[0]
-        self.assertEqual(2, len(args))
-        self.assertEqual({}, kwargs)
-        numa_topology = args[1].numa_topology
-        self.assertEqual(cell_count, len(numa_topology.cells), args)
-
-        # We always reset mock_filter because we don't want these result
-        # fudging later tests
-        self.mock_filter.reset_mock()
-        self.assertEqual(0, len(self.mock_filter.call_args_list))
-
-    def _inspect_request_spec(self, server, cell_count):
-        """Helper function used by test_resize_server_with_numa* tests."""
-        req_spec = objects.RequestSpec.get_by_instance_uuid(
-            self.ctxt, server['id'])
-        self.assertEqual(cell_count, len(req_spec.numa_topology.cells))
-
-    def test_resize_revert_server_with_numa(self):
-        """Create a single-node instance and resize it to a flavor with two
-        nodes, then revert to the old flavor rather than confirm.
-
-        Nothing too complicated going on here. We create an instance with a one
-        NUMA node guest topology and then attempt to resize this to use a
-        topology with two nodes. Once done, we revert this resize to ensure the
-        instance reverts to using the old NUMA topology as expected.
-        """
-        # don't bother waiting for neutron events since we don't actually have
-        # neutron
-        self.flags(vif_plugging_timeout=0)
-
-        host_info = fakelibvirt.HostInfo(cpu_nodes=2, cpu_sockets=1,
-                                         cpu_cores=2, cpu_threads=2,
-                                         kB_mem=15740000)
-
-        # Start services
-        self.computes = {}
-        for host in ['test_compute0', 'test_compute1']:
-            fake_connection = self._get_connection(
-                host_info=host_info, hostname=host)
-
-            # This is fun. Firstly we need to do a global'ish mock so we can
-            # actually start the service.
-            with mock.patch('nova.virt.libvirt.host.Host.get_connection',
-                            return_value=fake_connection):
-                compute = self.start_service('compute', host=host)
-
-            # Once that's done, we need to do some tweaks to each individual
-            # compute "service" to make sure they return unique objects
-            compute.driver._host.get_connection = lambda: fake_connection
-            self.computes[host] = compute
-
-        # STEP ONE
-
-        # Create server
-        extra_spec = {'hw:numa_nodes': '1'}
-        flavor_a_id = self._create_flavor(vcpu=4, extra_spec=extra_spec)
-
-        server = self.api.post_server(
-            {'server': self._build_server(flavor_a_id)}
-        )
-        server = self._wait_for_state_change(server, 'BUILD')
-
-        # Ensure the filter saw the 'numa_topology' field and the request spec
-        # is as expected
-        self._inspect_filter_numa_topology(cell_count=1)
-        self._inspect_request_spec(server, cell_count=1)
-
-        # STEP TWO
-
-        # Create a new flavor with a different but still valid number of NUMA
-        # nodes
-        extra_spec = {'hw:numa_nodes': '2'}
-        flavor_b_id = self._create_flavor(vcpu=4, extra_spec=extra_spec)
-
-        # TODO(stephenfin): The mock of 'migrate_disk_and_power_off' should
-        # probably be less...dumb
-        with mock.patch('nova.virt.libvirt.driver.LibvirtDriver'
-                        '.migrate_disk_and_power_off', return_value='{}'):
-            post = {'resize': {'flavorRef': flavor_b_id}}
-            self.api.post_server_action(server['id'], post)
-
-        server = self._wait_for_state_change(server, 'VERIFY_RESIZE')
-
-        # Ensure the filter saw 'hw:numa_nodes=2' from flavor_b and the request
-        # spec has been updated
-        self._inspect_filter_numa_topology(cell_count=2)
-        self._inspect_request_spec(server, cell_count=2)
-
-        # STEP THREE
-
-        # Revert the instance rather than confirming it, and ensure we see the
-        # old NUMA topology
-
-        # TODO(stephenfin): The mock of 'migrate_disk_and_power_off' should
-        # probably be less...dumb
-        with mock.patch('nova.virt.libvirt.driver.LibvirtDriver'
-                        '.migrate_disk_and_power_off', return_value='{}'):
-            post = {'revertResize': {}}
-            self.api.post_server_action(server['id'], post)
-
-        server = self._wait_for_state_change(server, 'ACTIVE')
-
-        # We don't have a filter call to check, but we can check that the
-        # request spec changes were reverted
-        self._inspect_request_spec(server, cell_count=1)
 
     def test_resize_vcpu_to_pcpu(self):
         """Create an unpinned instance and resize it to a flavor with pinning.

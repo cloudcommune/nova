@@ -166,7 +166,7 @@ class BaseTestCase(test.TestCase):
                     self.compute.driver)
         self.compute.rt = fake_rt
 
-        def fake_get_compute_nodes_in_db(self, context, *args, **kwargs):
+        def fake_get_compute_nodes_in_db(self, context, **kwargs):
             fake_compute_nodes = [{'local_gb': 259,
                                    'uuid': uuids.fake_compute_node,
                                    'vcpus_used': 0,
@@ -6482,9 +6482,8 @@ class ComputeTestCase(BaseTestCase,
             mock.patch.object(
                 self.compute.network_api, 'setup_networks_on_host'),
             mock.patch.object(migration_obj, 'save'),
-            mock.patch.object(instance, 'get_network_info', return_value=[]),
         ) as (
-            mock_migrate, mock_setup, mock_mig_save, mock_get_nw_info
+            mock_migrate, mock_setup, mock_mig_save
         ):
             self.compute._post_live_migration(c, instance, dest,
                                               migrate_data=migrate_data,
@@ -6496,7 +6495,6 @@ class ComputeTestCase(BaseTestCase,
         mock_migrate.assert_called_once_with(c, instance, migration)
         mock_post.assert_called_once_with(c, instance, False, dest)
         mock_clear.assert_called_once_with(mock.ANY)
-        mock_get_nw_info.assert_called()
 
     @mock.patch('nova.compute.utils.notify_about_instance_action')
     def test_post_live_migration_working_correctly(self, mock_notify):
@@ -6539,15 +6537,12 @@ class ComputeTestCase(BaseTestCase,
                               'clear_events_for_instance'),
             mock.patch.object(self.compute, 'update_available_resource'),
             mock.patch.object(migration_obj, 'save'),
-            mock.patch.object(instance, 'get_network_info'),
         ) as (
             post_live_migration, unfilter_instance,
             migrate_instance_start, post_live_migration_at_destination,
             post_live_migration_at_source, setup_networks_on_host,
-            clear_events, update_available_resource, mig_save, get_nw_info,
+            clear_events, update_available_resource, mig_save
         ):
-            nw_info = network_model.NetworkInfo.hydrate([])
-            get_nw_info.return_value = nw_info
             self.compute._post_live_migration(c, instance, dest,
                                               migrate_data=migrate_data,
                                               source_bdms=bdms)
@@ -6570,7 +6565,7 @@ class ComputeTestCase(BaseTestCase,
             post_live_migration_at_destination.assert_has_calls([
                 mock.call(c, instance, False, dest)])
             post_live_migration_at_source.assert_has_calls(
-                [mock.call(c, instance, nw_info)])
+                [mock.call(c, instance, [])])
             clear_events.assert_called_once_with(instance)
             update_available_resource.assert_has_calls([mock.call(c)])
             self.assertEqual('completed', migration_obj.status)
@@ -12541,8 +12536,6 @@ class DisabledInstanceTypesTestCase(BaseTestCase):
         self.assertRaises(exception.FlavorNotFound,
             self.compute_api.create, self.context, self.inst_type, None)
 
-    @mock.patch('nova.compute.api.API.get_instance_host_status',
-                new=mock.Mock(return_value=obj_fields.HostStatus.UP))
     @mock.patch('nova.compute.api.API._validate_flavor_image_nostatus')
     @mock.patch('nova.objects.RequestSpec')
     def test_can_resize_to_visible_instance_type(self, mock_reqspec,
@@ -12565,8 +12558,6 @@ class DisabledInstanceTypesTestCase(BaseTestCase):
         with mock.patch('nova.conductor.api.ComputeTaskAPI.resize_instance'):
             self.compute_api.resize(self.context, instance, '4')
 
-    @mock.patch('nova.compute.api.API.get_instance_host_status',
-                new=mock.Mock(return_value=obj_fields.HostStatus.UP))
     def test_cannot_resize_to_disabled_instance_type(self):
         instance = self._create_fake_instance_obj()
         orig_get_flavor_by_flavor_id = \

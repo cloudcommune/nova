@@ -338,26 +338,6 @@ class LibvirtConfigCPUFeatureTest(LibvirtConfigBaseTest):
             <feature name="mtrr"/>
         """)
 
-    def test_config_parse_require(self):
-        xml = """
-            <feature name="mtrr" policy="require"/>
-        """
-        xmldoc = etree.fromstring(xml)
-        obj = config.LibvirtConfigCPUFeature()
-        obj.parse_dom(xmldoc)
-
-        self.assertEqual(obj.policy, "require")
-
-    def test_config_parse_disable(self):
-        xml = """
-            <feature name="mtrr" policy="disable"/>
-        """
-        xmldoc = etree.fromstring(xml)
-        obj = config.LibvirtConfigCPUFeature()
-        obj.parse_dom(xmldoc)
-
-        self.assertEqual(obj.policy, "disable")
-
 
 class LibvirtConfigGuestCPUFeatureTest(LibvirtConfigBaseTest):
 
@@ -453,27 +433,6 @@ class LibvirtConfigCPUTest(LibvirtConfigBaseTest):
               <vendor>Intel</vendor>
               <feature name="apic"/>
               <feature name="mtrr"/>
-            </cpu>
-        """)
-
-    def test_config_disabled_features(self):
-        obj = config.LibvirtConfigCPU()
-        obj.model = "Penryn"
-        obj.vendor = "Intel"
-        obj.arch = obj_fields.Architecture.X86_64
-
-        disabled_feature = config.LibvirtConfigCPUFeature("mtrr")
-        disabled_feature.policy = "disable"
-        obj.add_feature(disabled_feature)
-        obj.add_feature(config.LibvirtConfigCPUFeature("apic"))
-
-        xml = obj.to_xml()
-        self.assertXmlEqual(xml, """
-            <cpu>
-              <arch>x86_64</arch>
-              <model>Penryn</model>
-              <vendor>Intel</vendor>
-              <feature name="apic"/>
             </cpu>
         """)
 
@@ -2515,6 +2474,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
             config.LibvirtConfigGuestFeatureACPI(),
             config.LibvirtConfigGuestFeatureAPIC(),
             config.LibvirtConfigGuestFeaturePAE(),
+            config.LibvirtConfigGuestFeatureKvmHidden()
         ]
 
         disk = config.LibvirtConfigGuestDisk()
@@ -2542,6 +2502,9 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
                 <acpi/>
                 <apic/>
                 <pae/>
+                <kvm>
+                  <hidden state='on'/>
+                </kvm>
               </features>
               <devices>
                 <disk type="file" device="disk">

@@ -534,6 +534,12 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def attach_volume(self, context, connection_info, instance, mountpoint,
+                      attach_mode,
+                      disk_bus=None, device_type=None, encryption=None):
+        """Attach the disk to the instance at mountpoint using info."""
+        raise NotImplementedError()
+
+    def attach_volume(self, context, connection_info, instance, mountpoint,
                       disk_bus=None, device_type=None, encryption=None):
         """Attach the disk to the instance at mountpoint using info.
 
@@ -1377,6 +1383,13 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
+    def qemu_agent_command(self, instance, execute, arguments):
+        -        """execute qemu agent command on the specified instance.
+
+            :param instance: nova.objects.instance.Instance
+            """
+        raise NotImplementedError()
+
     def inject_file(self, instance, b64_path, b64_contents):
         """Writes a file on the specified instance.
 
@@ -1502,6 +1515,9 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def unplug_vifs(self, instance, network_info):
+        # NOTE(markus_z): 2015-08-18
+        # The compute manager doesn't use this interface, which seems odd
+        # since the manager should be the controlling thing here.
         """Unplug virtual interfaces (VIFs) from networks.
 
         The counter action is :func:`plug_vifs`.
@@ -1876,6 +1892,12 @@ class ComputeDriver(object):
         is set by the backing hypervisor.
         """
         return False
+
+    def get_volume_qos(self, context, instance):
+        raise NotImplementedError()
+
+    def set_volume_qos(self, context, instance, bdms):
+        raise NotImplementedError()
 
 
 def load_compute_driver(virtapi, compute_driver=None):

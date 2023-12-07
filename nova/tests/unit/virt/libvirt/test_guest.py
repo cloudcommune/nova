@@ -307,9 +307,7 @@ class GuestTestCase(test.NoDBTestCase):
         self.assertIn('foo', six.text_type(ex))
 
     @mock.patch.object(libvirt_guest.Guest, "detach_device")
-    def _test_detach_device_with_retry_second_detach_failure(
-            self, mock_detach, error_code=None, error_message=None,
-            supports_device_missing=False):
+    def test_detach_device_with_retry_operation_failed(self, mock_detach):
         # This simulates a retry of the transient/live domain detach
         # failing because the device is not found
         conf = mock.Mock(spec=vconfig.LibvirtConfigGuestDevice)
@@ -320,14 +318,13 @@ class GuestTestCase(test.NoDBTestCase):
         fake_device = "vdb"
         fake_exc = fakelibvirt.make_libvirtError(
             fakelibvirt.libvirtError, "",
-            error_message=error_message,
-            error_code=error_code,
+            error_message="operation failed: disk vdb not found",
+            error_code=fakelibvirt.VIR_ERR_OPERATION_FAILED,
             error_domain=fakelibvirt.VIR_FROM_DOMAIN)
         mock_detach.side_effect = [None, fake_exc]
         retry_detach = self.guest.detach_device_with_retry(
             get_config, fake_device, live=True,
-            inc_sleep_time=.01, max_retry_count=3,
-            supports_device_missing_error_code=supports_device_missing)
+            inc_sleep_time=.01, max_retry_count=3)
         # Some time later, we can do the wait/retry to ensure detach
         self.assertRaises(exception.DeviceNotFound, retry_detach)
         # Check that the save_and_reraise_exception context manager didn't log
@@ -336,61 +333,49 @@ class GuestTestCase(test.NoDBTestCase):
         self.assertNotIn('Original exception being dropped',
                          self.stdlog.logger.output)
 
-    # TODO(lyarwood): Remove this test once MIN_LIBVIRT_VERSION is >= 4.1.0
-    def test_detach_device_with_retry_second_detach_operation_failed(self):
-        self._test_detach_device_with_retry_second_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_OPERATION_FAILED,
-            error_message="operation failed: disk vdb not found",
-            supports_device_missing=False)
+    @mock.patch.object(libvirt_guest.Guest, "detach_device")
+    def test_detach_device_with_retry_operation_internal(self, mock_detach):
+        # This simulates a retry of the transient/live domain detach
+        # failing because the device is not found
+        conf = mock.Mock(spec=vconfig.LibvirtConfigGuestDevice)
+        conf.to_xml.return_value = "</xml>"
+        self.domain.isPersistent.return_value = True
 
-    # TODO(lyarwood): Remove this test once MIN_LIBVIRT_VERSION is >= 4.1.0
-    def test_detach_device_with_retry_second_detach_internal_error(self):
-        self._test_detach_device_with_retry_second_detach_failure(
+        get_config = mock.Mock(return_value=conf)
+        fake_device = "vdb"
+        fake_exc = fakelibvirt.make_libvirtError(
+            fakelibvirt.libvirtError, "",
+            error_message="operation failed: disk vdb not found",
             error_code=fakelibvirt.VIR_ERR_INTERNAL_ERROR,
-            error_message="operation failed: disk vdb not found",
-            supports_device_missing=False)
+            error_domain=fakelibvirt.VIR_FROM_DOMAIN)
+        mock_detach.side_effect = [None, fake_exc]
+        retry_detach = self.guest.detach_device_with_retry(
+            get_config, fake_device, live=True,
+            inc_sleep_time=.01, max_retry_count=3)
+        # Some time later, we can do the wait/retry to ensure detach
+        self.assertRaises(exception.DeviceNotFound, retry_detach)
 
-    def test_detach_device_with_retry_second_detach_device_missing(self):
-        self._test_detach_device_with_retry_second_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_DEVICE_MISSING,
-            error_message="device not found: disk vdb not found",
-            supports_device_missing=True)
-
-    def _test_detach_device_with_retry_first_detach_failure(
-            self, error_code=None, error_message=None,
-            supports_device_missing=False):
-        # This simulates a persistent or live domain detach failing because the
-        # device is not found during the first attempt to detach the device.
-        # We should still attempt to detach the device from the live config if
-        # the detach from persistent failed OR we should retry the detach from
-        # the live config if the first detach from live config failed.
-        # Note that the side effects in this test case [fake_exc, None] could
-        # not happen in real life if the first detach failed because the detach
-        # from live raised not found. In real life, the second attempt to
-        # detach from live would raise not found again because the device is
-        # not present. The purpose of this test is to verify that we try to
-        # detach a second time if the first detach fails, so we are OK with the
-        # unrealistic side effects for detach from live failing the first time.
+    def test_detach_device_with_retry_invalid_argument(self):
+        # This simulates a persistent domain detach failing because
+        # the device is not found
         conf = mock.Mock(spec=vconfig.LibvirtConfigGuestDevice)
         conf.to_xml.return_value = "</xml>"
         self.domain.isPersistent.return_value = True
 
         get_config = mock.Mock()
-        # Simulate an inactive or live detach attempt which fails (not found)
-        # followed by a live config detach attempt that is successful
+        # Simulate the persistent domain attach attempt followed by the live
+        # domain attach attempt and success
         get_config.side_effect = [conf, conf, conf, None, None]
         fake_device = "vdb"
         fake_exc = fakelibvirt.make_libvirtError(
             fakelibvirt.libvirtError, "",
-            error_message=error_message,
-            error_code=error_code,
+            error_message="invalid argument: no target device vdb",
+            error_code=fakelibvirt.VIR_ERR_INVALID_ARG,
             error_domain=fakelibvirt.VIR_FROM_DOMAIN)
-        # Detach from persistent or live raises not found, detach from live
-        # succeeds afterward
+        # Detach from persistent raises not found, detach from live succeeds
         self.domain.detachDeviceFlags.side_effect = [fake_exc, None]
         retry_detach = self.guest.detach_device_with_retry(get_config,
-            fake_device, live=True, inc_sleep_time=.01, max_retry_count=3,
-            supports_device_missing_error_code=supports_device_missing)
+            fake_device, live=True, inc_sleep_time=.01, max_retry_count=3)
         # We should have tried to detach from the persistent domain
         self.domain.detachDeviceFlags.assert_called_once_with(
             "</xml>", flags=(fakelibvirt.VIR_DOMAIN_AFFECT_CONFIG |
@@ -402,32 +387,30 @@ class GuestTestCase(test.NoDBTestCase):
         self.domain.detachDeviceFlags.assert_called_once_with(
             "</xml>", flags=fakelibvirt.VIR_DOMAIN_AFFECT_LIVE)
 
-    # TODO(lyarwood): Remove this test once MIN_LIBVIRT_VERSION is >= 4.1.0
-    def test_detach_device_with_retry_first_detach_operation_failed(self):
-        self._test_detach_device_with_retry_first_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_OPERATION_FAILED,
-            error_message="operation failed: disk vdb not found",
-            supports_device_missing=False)
+    def test_detach_device_with_retry_invalid_argument_no_live(self):
+        # This simulates a persistent domain detach failing because
+        # the device is not found
+        conf = mock.Mock(spec=vconfig.LibvirtConfigGuestDevice)
+        conf.to_xml.return_value = "</xml>"
+        self.domain.isPersistent.return_value = True
 
-    # TODO(lyarwood): Remove this test once MIN_LIBVIRT_VERSION is >= 4.1.0
-    def test_detach_device_with_retry_first_detach_internal_error(self):
-        self._test_detach_device_with_retry_first_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_INTERNAL_ERROR,
-            error_message="operation failed: disk vdb not found",
-            supports_device_missing=False)
-
-    # TODO(lyarwood): Remove this test once MIN_LIBVIRT_VERSION is >= 4.1.0
-    def test_detach_device_with_retry_first_detach_invalid_arg(self):
-        self._test_detach_device_with_retry_first_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_INVALID_ARG,
+        get_config = mock.Mock()
+        # Simulate the persistent domain attach attempt
+        get_config.return_value = conf
+        fake_device = "vdb"
+        fake_exc = fakelibvirt.make_libvirtError(
+            fakelibvirt.libvirtError, "",
             error_message="invalid argument: no target device vdb",
-            supports_device_missing=False)
-
-    def test_detach_device_with_retry_first_detach_device_missing(self):
-        self._test_detach_device_with_retry_first_detach_failure(
-            error_code=fakelibvirt.VIR_ERR_DEVICE_MISSING,
-            error_message="device not found: disk vdb not found",
-            supports_device_missing=True)
+            error_code=fakelibvirt.VIR_ERR_INVALID_ARG,
+            error_domain=fakelibvirt.VIR_FROM_DOMAIN)
+        # Detach from persistent raises not found
+        self.domain.detachDeviceFlags.side_effect = fake_exc
+        self.assertRaises(exception.DeviceNotFound,
+            self.guest.detach_device_with_retry, get_config,
+            fake_device, live=False, inc_sleep_time=.01, max_retry_count=3)
+        # We should have tried to detach from the persistent domain
+        self.domain.detachDeviceFlags.assert_called_once_with(
+            "</xml>", flags=fakelibvirt.VIR_DOMAIN_AFFECT_CONFIG)
 
     def test_get_xml_desc(self):
         self.guest.get_xml_desc()
@@ -716,7 +699,6 @@ class GuestTestCase(test.NoDBTestCase):
                 'an-uri', flags=1, params={'migrate_uri': 'dest-uri',
                                            'migrate_disks': 'disk1',
                                            'destination_xml': '</xml>',
-                                           'persistent_xml': '</xml>',
                                            'bandwidth': 2})
 
     @testtools.skipIf(not six.PY2, 'libvirt python3 bindings accept unicode')
@@ -734,7 +716,6 @@ class GuestTestCase(test.NoDBTestCase):
                                            'migrate_disks': ['disk1',
                                                              'disk2'],
                                            'destination_xml': expect_dest_xml,
-                                           'persistent_xml': expect_dest_xml,
                                            'bandwidth': 2})
 
     def test_abort_job(self):

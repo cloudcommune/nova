@@ -67,7 +67,6 @@ def is_vif_model_valid_for_virt(virt_type, vif_model):
                  network_model.VIF_MODEL_PCNET,
                  network_model.VIF_MODEL_RTL8139,
                  network_model.VIF_MODEL_E1000,
-                 network_model.VIF_MODEL_E1000E,
                  network_model.VIF_MODEL_LAN9118,
                  network_model.VIF_MODEL_SPAPR_VLAN],
         'kvm': [network_model.VIF_MODEL_VIRTIO,
@@ -75,7 +74,6 @@ def is_vif_model_valid_for_virt(virt_type, vif_model):
                 network_model.VIF_MODEL_PCNET,
                 network_model.VIF_MODEL_RTL8139,
                 network_model.VIF_MODEL_E1000,
-                network_model.VIF_MODEL_E1000E,
                 network_model.VIF_MODEL_SPAPR_VLAN],
         'xen': [network_model.VIF_MODEL_NETFRONT,
                 network_model.VIF_MODEL_NE2K_PCI,
@@ -126,24 +124,6 @@ class LibvirtGenericVIFDriver(object):
             return vif['devname']
         return ("nic" + vif['id'])[:network_model.NIC_NAME_LEN]
 
-    def get_vif_model(self, image_meta=None, vif_model=None):
-
-        model = vif_model
-
-        # If the user has specified a 'vif_model' against the
-        # image then honour that model
-        if image_meta:
-            model = osinfo.HardwareProperties(image_meta).network_model
-
-        # If the virt type is KVM/QEMU/VZ(Parallels), then use virtio according
-        # to the global config parameter
-        if (model is None and CONF.libvirt.virt_type in
-                ('kvm', 'qemu', 'parallels') and
-                CONF.libvirt.use_virtio_for_bridges):
-            model = network_model.VIF_MODEL_VIRTIO
-
-        return model
-
     def get_base_config(self, instance, mac, image_meta,
                         inst_type, virt_type, vnic_type, host):
         # TODO(sahid): We should rewrite it. This method handles too
@@ -164,9 +144,16 @@ class LibvirtGenericVIFDriver(object):
                 conf, mac, model, driver, vhost_queues, rx_queue_size)
             return conf
 
-        # if model has already been defined,
-        # image_meta contents will override it
-        model = self.get_vif_model(image_meta=image_meta, vif_model=model)
+        # If the user has specified a 'vif_model' against the
+        # image then honour that model
+        if image_meta:
+            model = osinfo.HardwareProperties(image_meta).network_model
+
+        # If the virt type is KVM/QEMU/VZ(Parallels), then use virtio according
+        # to the global config parameter
+        if (model is None and virt_type in ('kvm', 'qemu', 'parallels') and
+                CONF.libvirt.use_virtio_for_bridges):
+            model = network_model.VIF_MODEL_VIRTIO
 
         if not is_vif_model_valid_for_virt(virt_type, model):
             raise exception.UnsupportedHardware(model=model, virt=virt_type)
@@ -223,7 +210,10 @@ class LibvirtGenericVIFDriver(object):
         """
         driver = None
         vhost_queues = None
-        if self._requests_multiqueue(image_meta):
+        if not isinstance(image_meta, objects.ImageMeta):
+            image_meta = objects.ImageMeta.from_dict(image_meta)
+        img_props = image_meta.properties
+        if img_props.get('hw_vif_multiqueue_enabled'):
             driver = 'vhost'
             max_tap_queues = self._get_max_tap_queues()
             if max_tap_queues:
@@ -234,27 +224,7 @@ class LibvirtGenericVIFDriver(object):
 
         return (driver, vhost_queues)
 
-    def _requests_multiqueue(self, image_meta):
-        """Check if multiqueue property is set in the image metadata."""
-
-        if not isinstance(image_meta, objects.ImageMeta):
-            image_meta = objects.ImageMeta.from_dict(image_meta)
-
-        img_props = image_meta.properties
-
-        if img_props.get('hw_vif_multiqueue_enabled'):
-            return True
-
-        return False
-
     def _get_max_tap_queues(self):
-        # Note(sean-k-mooney): some linux distros have backported
-        # changes for newer kernels which make the kernel version
-        # number unreliable to determine the max queues supported
-        # To address this without making the code distro dependent
-        # we introduce a new config option and prefer it if set.
-        if CONF.libvirt.max_queues:
-            return CONF.libvirt.max_queues
         # NOTE(kengo.sakai): In kernels prior to 3.0,
         # multiple queues on a tap interface is not supported.
         # In kernels 3.x, the number of queues on a tap interface
@@ -718,13 +688,7 @@ class LibvirtGenericVIFDriver(object):
         """Plug a VIF_TYPE_TAP virtual interface."""
         dev = self.get_vif_devname(vif)
         mac = vif['details'].get(network_model.VIF_DETAILS_TAP_MAC_ADDRESS)
-        image_meta = instance.image_meta
-        vif_model = self.get_vif_model(image_meta=image_meta)
-        # TODO(ganso): explore whether multiqueue works for other vif models
-        # that go through this code path.
-        multiqueue = (self._requests_multiqueue(image_meta) and
-                      vif_model == network_model.VIF_MODEL_VIRTIO)
-        nova.privsep.linux_net.create_tap_dev(dev, mac, multiqueue=multiqueue)
+        nova.privsep.linux_net.create_tap_dev(dev, mac)
         network = vif.get('network')
         mtu = network.get_meta('mtu') if network else None
         nova.privsep.linux_net.set_device_mtu(dev, mtu)

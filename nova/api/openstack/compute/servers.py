@@ -348,7 +348,7 @@ class ServersController(wsgi.Controller):
         return response
 
     def _get_server(self, context, req, instance_uuid, is_detail=False,
-                    cell_down_support=False, columns_to_join=None):
+                    cell_down_support=False):
         """Utility function for looking up an instance by uuid.
 
         :param context: request context for auth
@@ -360,8 +360,6 @@ class ServersController(wsgi.Controller):
                                   returning a minimal instance
                                   construct if the relevant cell is
                                   down.
-        :param columns_to_join: optional list of extra fields to join on the
-            Instance object
         """
         expected_attrs = ['flavor', 'numa_topology']
         if is_detail:
@@ -371,8 +369,6 @@ class ServersController(wsgi.Controller):
                 expected_attrs.append("trusted_certs")
             expected_attrs = self._view_builder.get_show_expected_attrs(
                                                             expected_attrs)
-        if columns_to_join:
-            expected_attrs.extend(columns_to_join)
         instance = common.get_instance(self.compute_api, context,
                                        instance_uuid,
                                        expected_attrs=expected_attrs,
@@ -604,6 +600,7 @@ class ServersController(wsgi.Controller):
         """Creates a new server for a given user."""
         context = req.environ['nova.context']
         server_dict = body['server']
+        LOG.debug("Create server with server_dict: %s", server_dict)
         password = self._get_server_admin_password(server_dict)
         name = common.normalize_name(server_dict['name'])
         description = name
@@ -736,7 +733,6 @@ class ServersController(wsgi.Controller):
         except (exception.ImageNotActive,
                 exception.ImageBadRequest,
                 exception.ImageNotAuthorized,
-                exception.ImageUnacceptable,
                 exception.FixedIpNotFoundForAddress,
                 exception.FlavorNotFound,
                 exception.FlavorDiskTooSmall,
@@ -762,7 +758,6 @@ class ServersController(wsgi.Controller):
                 exception.InvalidBDMEphemeralSize,
                 exception.InvalidBDMFormat,
                 exception.InvalidBDMSwapSize,
-                exception.InvalidBDMDiskBus,
                 exception.VolumeTypeNotFound,
                 exception.AutoDiskConfigDisabledByImage,
                 exception.InstanceGroupNotFound,
@@ -942,8 +937,7 @@ class ServersController(wsgi.Controller):
     def _resize(self, req, instance_id, flavor_id, **kwargs):
         """Begin the resize process with given instance/flavor."""
         context = req.environ["nova.context"]
-        instance = self._get_server(context, req, instance_id,
-                                    columns_to_join=['services'])
+        instance = self._get_server(context, req, instance_id)
         context.can(server_policies.SERVERS % 'resize',
                     target={'user_id': instance.user_id,
                             'project_id': instance.project_id})
@@ -966,9 +960,7 @@ class ServersController(wsgi.Controller):
             raise exc.HTTPForbidden(
                 explanation=error.format_message())
         except (exception.InstanceIsLocked,
-                exception.AllocationMoveFailed,
-                exception.InstanceNotReady,
-                exception.ServiceUnavailable) as e:
+                exception.AllocationMoveFailed) as e:
             raise exc.HTTPConflict(explanation=e.format_message())
         except exception.InstanceInvalidState as state_error:
             common.raise_http_conflict_for_instance_invalid_state(state_error,
@@ -1140,7 +1132,6 @@ class ServersController(wsgi.Controller):
                 exception.ImageNotActive,
                 exception.ImageUnacceptable,
                 exception.InvalidMetadata,
-                exception.InvalidVolume,
                 ) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
         except INVALID_FLAVOR_IMAGE_EXCEPTIONS as error:

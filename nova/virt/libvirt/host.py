@@ -32,6 +32,7 @@ import inspect
 import operator
 import os
 import socket
+import sys
 import threading
 import traceback
 
@@ -124,15 +125,15 @@ class Host(object):
     @staticmethod
     def _get_libvirt_proxy_classes(libvirt_module):
         """Return a tuple for tpool.Proxy's autowrap argument containing all
-        public vir* classes defined by the libvirt module.
+        classes defined by the libvirt module except libvirtError.
         """
 
         # Get a list of (name, class) tuples of libvirt classes
         classes = inspect.getmembers(libvirt_module, inspect.isclass)
 
-        # Return a list of just the vir* classes, filtering out libvirtError
-        # and any private globals pointing at private internal classes.
-        return tuple([cls[1] for cls in classes if cls[0].startswith("vir")])
+        # Return a list of just the classes, filtering out libvirtError because
+        # we don't need to proxy that
+        return tuple([cls[1] for cls in classes if cls[0] != 'libvirtError'])
 
     def _wrap_libvirt_proxy(self, obj):
         """Return an object wrapped in a tpool.Proxy using autowrap appropriate
@@ -512,7 +513,7 @@ class Host(object):
                                               payload)
             compute_utils.notify_about_libvirt_connect_error(
                 ctxt, ip=CONF.my_ip, exception=ex, tb=traceback.format_exc())
-            raise exception.HypervisorUnavailable()
+            raise exception.HypervisorUnavailable(host=CONF.host)
 
         return conn
 
@@ -1102,6 +1103,9 @@ class Host(object):
 
         :returns: the total usage of memory(MB).
         """
+        if sys.platform.upper() not in ['LINUX2', 'LINUX3']:
+            return 0
+
         if CONF.libvirt.virt_type == 'xen':
             # For xen, report the sum of all domains, with
             return self._sum_domain_memory_mb(include_host=True)

@@ -75,6 +75,9 @@ from nova import exception
 from nova import exception_wrapper
 from nova import hooks
 from nova.i18n import _
+from nova.i18n import _LE
+from nova.i18n import _LI
+from nova.i18n import _LW
 from nova import image
 from nova import manager
 from nova import network
@@ -83,6 +86,7 @@ from nova.network import model as network_model
 from nova.network.security_group import openstack_driver
 from nova import objects
 from nova.objects import base as obj_base
+from nova.objects import block_device as obj_block_device
 from nova.objects import external_event as external_event_obj
 from nova.objects import fields
 from nova.objects import instance as obj_instance
@@ -878,25 +882,6 @@ class ComputeManager(manager.Manager):
                     {'cpus': list(pinned_cpus)},
                     instance=instance)
 
-    def _reset_live_migration(self, context, instance):
-        migration = None
-        try:
-            migration = objects.Migration.get_by_instance_and_status(
-                                      context, instance.uuid, 'running')
-            if migration:
-                self.live_migration_abort(context, instance, migration.id)
-        except Exception:
-            LOG.exception('Failed to abort live-migration',
-                          instance=instance)
-        finally:
-            if migration:
-                self._set_migration_status(migration, 'error')
-            LOG.info('Instance found in migrating state during '
-                     'startup. Resetting task_state',
-                     instance=instance)
-            instance.task_state = None
-            instance.save(expected_task_state=[task_states.MIGRATING])
-
     def _init_instance(self, context, instance):
         """Initialize this instance during service init."""
 
@@ -1129,8 +1114,9 @@ class ComputeManager(manager.Manager):
                 instance.save()
         if instance.task_state == task_states.MIGRATING:
             # Live migration did not complete, but instance is on this
-            # host. Abort ongoing migration if still running and reset state.
-            self._reset_live_migration(context, instance)
+            # host, so reset the state.
+            instance.task_state = None
+            instance.save(expected_task_state=[task_states.MIGRATING])
 
         db_state = instance.power_state
         drv_state = self._get_power_state(context, instance)
@@ -1329,13 +1315,6 @@ class ComputeManager(manager.Manager):
             compute_utils.disk_ops_semaphore = \
                 eventlet.semaphore.BoundedSemaphore(
                     CONF.compute.max_concurrent_disk_ops)
-
-        if CONF.compute.max_disk_devices_to_attach == 0:
-            msg = _('[compute]max_disk_devices_to_attach has been set to 0, '
-                    'which will prevent instances from being able to boot. '
-                    'Set -1 for unlimited or set >= 1 to limit the maximum '
-                    'number of disk devices.')
-            raise exception.InvalidConfiguration(msg)
 
         self.driver.init_host(host=self.host)
         context = nova.context.get_admin_context()
@@ -2046,7 +2025,9 @@ class ComputeManager(manager.Manager):
                      filter_properties, admin_password=None,
                      injected_files=None, requested_networks=None,
                      security_groups=None, block_device_mapping=None,
-                     node=None, limits=None, host_list=None):
+                     node=None, limits=None, host_list=None, qos_config=None):
+        LOG.debug("build_and_run_instance %s "
+                  "with qos_config: %s", instance.uuid, qos_config)
 
         @utils.synchronized(instance.uuid)
         def _locked_do_build_and_run_instance(*args, **kwargs):
@@ -2057,6 +2038,12 @@ class ComputeManager(manager.Manager):
             with self._build_semaphore:
                 try:
                     result = self._do_build_and_run_instance(*args, **kwargs)
+                    if qos_config:
+                        LOG.debug("Set volume qos for instance %s "
+                                  "with qos_config: %s",
+                                  instance.uuid, qos_config)
+                        self.set_volume_qos(
+                            context, instance, qos_config)
                 except Exception:
                     # NOTE(mriedem): This should really only happen if
                     # _decode_files in _do_build_and_run_instance fails, and
@@ -2698,50 +2685,6 @@ class ComputeManager(manager.Manager):
 
     def _cleanup_allocated_networks(self, context, instance,
             requested_networks):
-        """Cleanup networks allocated for instance.
-
-        :param context: nova request context
-        :param instance: nova.objects.instance.Instance object
-        :param requested_networks: nova.objects.NetworkRequestList
-        """
-        LOG.debug('Unplugging VIFs for instance', instance=instance)
-
-        network_info = instance.get_network_info()
-
-        # NOTE(stephenfin) to avoid nova destroying the instance without
-        # unplugging the interface, refresh network_info if it is empty.
-        if not network_info:
-            try:
-                network_info = self.network_api.get_instance_nw_info(
-                    context, instance,
-                )
-            except Exception as exc:
-                LOG.warning(
-                    'Failed to update network info cache when cleaning up '
-                    'allocated networks. Stale VIFs may be left on this host.'
-                    'Error: %s', six.text_type(exc)
-                )
-                return
-
-        try:
-            self.driver.unplug_vifs(instance, network_info)
-        except NotImplementedError:
-            # This is an optional method so ignore things if it doesn't exist
-            LOG.debug(
-                'Virt driver does not provide unplug_vifs method, so it '
-                'is not possible determine if VIFs should be unplugged.'
-            )
-        except exception.NovaException as exc:
-            # It's possible that the instance never got as far as plugging
-            # VIFs, in which case we would see an exception which can be
-            # mostly ignored
-            LOG.warning(
-                'Cleaning up VIFs failed for instance. Error: %s',
-                six.text_type(exc), instance=instance,
-            )
-        else:
-            LOG.debug('Unplugged VIFs for instance', instance=instance)
-
         try:
             self._deallocate_network(context, instance, requested_networks)
         except Exception:
@@ -3257,6 +3200,13 @@ class ComputeManager(manager.Manager):
             # partitions.
             raise exception.PreserveEphemeralNotSupported()
 
+        qos_dict = {}
+        for bdi in block_device_info.get('block_device_mapping', []):
+            connect_info = bdi.get('connection_info', {}).get('data', {})
+            if 'qos_specs' in connect_info and 'volume_id' in connect_info:
+                qos_dict[connect_info['volume_id']] = connect_info['qos_specs']
+        LOG.debug("qos_config in _rebuild_default_impl: %s", qos_dict)
+
         if evacuate:
             detach_block_devices(context, bdms)
         else:
@@ -3270,6 +3220,12 @@ class ComputeManager(manager.Manager):
         instance.save(expected_task_state=[task_states.REBUILDING])
 
         new_block_device_info = attach_block_devices(context, instance, bdms)
+
+        for bdm in new_block_device_info.get('block_device_mapping', []):
+            connect_info = bdm.get('connection_info', {}).get('data', {})
+            if connect_info.get('volume_id') in qos_dict:
+                connect_info['qos_specs'] = qos_dict[connect_info['volume_id']]
+            bdm.save()
 
         instance.task_state = task_states.REBUILD_SPAWNING
         instance.save(
@@ -3584,8 +3540,11 @@ class ComputeManager(manager.Manager):
                     # another empty attachment before deleting the old one.
                     attachment_id = None
                     if bdm.attachment_id:
+                        attach_mode = self.volume_api.attachment_get(
+                            context, bdm.attachment_id)['attach_mode']
                         attachment_id = self.volume_api.attachment_create(
-                            context, bdm['volume_id'], instance.uuid)['id']
+                            context, bdm['volume_id'], instance.uuid,
+                            attach_mode)['id']
                     self._detach_volume(context, bdm, instance,
                                         destroy_bdm=False)
                     if attachment_id:
@@ -4045,6 +4004,53 @@ class ComputeManager(manager.Manager):
 
     @wrap_exception()
     @reverts_task_state
+    @wrap_instance_event(prefix='compute')
+    @wrap_instance_fault
+    def qemu_agent_command(self, context, instance, execute, arguments):
+        """use qemu agent command for an instance on this host.
+
+        This is generally only called by API after an image has
+        been build.
+
+        @param context: Nova auth context.
+        @param instance: Nova instance object.
+        @param execute: qemu agent command, use execute "guest-info"
+                        can get the execute command list.
+        @param arguments: qemu agent command arguments
+        """
+        context = context.elevated()
+        current_power_state = self._get_power_state(context, instance)
+        expected_state = power_state.RUNNING
+
+        if current_power_state != expected_state:
+            instance.task_state = None
+            _msg = _('instance %s is not running') % instance.uuid
+            raise exception.InstanceQemuAgentCommandFailed(
+                instance=instance.uuid, reason=_msg)
+
+        try:
+            LOG.info(_LI("Qemu agent command"), instance=instance)
+            instance.task_state = None
+            return self.driver.qemu_agent_command(instance, execute, arguments)
+        except NotImplementedError:
+            LOG.warning(_LW('qemu_agent_command is not implemented '
+                        'by this driver or guest instance.'),
+                        instance=instance)
+            instance.task_state = None
+            raise NotImplementedError(_('qemu_agent_command is not '
+                                      'implemented by this driver or guest '
+                                      'instance.'))
+        except exception.UnexpectedTaskStateError:
+            raise
+        except Exception:
+            LOG.exception(_LE('qemu_agent_command failed'),
+                          instance=instance)
+            _msg = _('error execute qemu agent command')
+            raise exception.InstanceQemuAgentCommandFailed(
+                instance=instance.uuid, reason=_msg)
+
+    @wrap_exception()
+    @reverts_task_state
     @wrap_instance_fault
     def inject_file(self, context, path, file_contents, instance):
         """Write a file to the specified path in an instance on this host."""
@@ -4257,10 +4263,6 @@ class ComputeManager(manager.Manager):
                     # allocations in placement, delete them here.
                     self._delete_allocation_after_move(
                         context, instance, migration)
-                    # Also as the instance is not any more on this host, update
-                    # the scheduler about the move
-                    self._delete_scheduler_instance_info(
-                        context, instance.uuid)
 
         do_confirm_resize(context, instance, migration.id)
 
@@ -4553,7 +4555,7 @@ class ComputeManager(manager.Manager):
             self._update_volume_attachments(context, instance, bdms)
 
             block_device_info = self._get_instance_block_device_info(
-                    context, instance, refresh_conn_info=True, bdms=bdms)
+                    context, instance, refresh_conn_info=False, bdms=bdms)
 
             power_on = old_vm_state != vm_states.STOPPED
             self.driver.finish_revert_migration(
@@ -4990,8 +4992,11 @@ class ComputeManager(manager.Manager):
                     # attachments in the new attach code so we have to do
                     # a delete and create without a connector (reserve),
                     # in other words, beware
+                    attach_mode = self.volume_api.attachment_get(
+                        context, bdm.attachment_id)['attach_mode']
                     attachment_id = self.volume_api.attachment_create(
-                        context, bdm.volume_id, instance.uuid)['id']
+                        context, bdm.volume_id, instance.uuid,
+                        attach_mode)['id']
                     self.volume_api.attachment_delete(context,
                                                       bdm.attachment_id)
                     bdm.attachment_id = attachment_id
@@ -5096,7 +5101,7 @@ class ComputeManager(manager.Manager):
         self._update_volume_attachments(context, instance, bdms)
 
         block_device_info = self._get_instance_block_device_info(
-            context, instance, refresh_conn_info=True, bdms=bdms)
+            context, instance, refresh_conn_info=False, bdms=bdms)
 
         # NOTE(mriedem): If the original vm_state was STOPPED, we don't
         # automatically power on the instance after it's migrated
@@ -5727,11 +5732,10 @@ class ComputeManager(manager.Manager):
                 utils.get_image_from_system_metadata(
                     instance.system_metadata))
 
+        self.network_api.setup_instance_network_on_host(context, instance,
+                                                        self.host)
+        network_info = self.network_api.get_instance_nw_info(context, instance)
         try:
-            self.network_api.setup_instance_network_on_host(context, instance,
-                                                            self.host)
-            network_info = self.network_api.get_instance_nw_info(
-                context, instance)
             with self.rt.instance_claim(context, instance, node, allocations,
                                         limits):
                 self.driver.spawn(context, instance, image_meta,
@@ -6129,7 +6133,8 @@ class ComputeManager(manager.Manager):
         context = context.elevated()
         LOG.info('Attaching volume %(volume_id)s to %(mountpoint)s',
                  {'volume_id': bdm.volume_id,
-                  'mountpoint': bdm['mount_device']},
+                  'mountpoint': bdm['mount_device'],
+                  'attachment_id': bdm['attachment_id']},
                  instance=instance)
         compute_utils.notify_about_volume_attach_detach(
             context, instance, self.host,
@@ -6354,8 +6359,13 @@ class ComputeManager(manager.Manager):
                    {'new_cinfo': new_cinfo, 'old_cinfo': old_cinfo})
             # Both new and old info might contain password
             LOG.debug(strutils.mask_password(msg), instance=instance)
-
-            self.driver.swap_volume(context, old_cinfo, new_cinfo, instance,
+            attach_mode = 'rw'
+            if new_attachment_id:
+                attachment = self.volume_api.attachment_get(context, new_attachment_id)
+                LOG.debug("attachment=%(attachment)s", {'attachment': attachment})
+                attach_mode = attachment['attach_mode']
+            self.driver.swap_volume(context, old_cinfo, new_cinfo,
+                                    attach_mode, instance,
                                     mountpoint, resize_to)
             if new_attachment_id:
                 self.volume_api.attachment_complete(context, new_attachment_id)
@@ -6462,33 +6472,9 @@ class ComputeManager(manager.Manager):
     @wrap_instance_fault
     def swap_volume(self, context, old_volume_id, new_volume_id, instance,
                     new_attachment_id):
-        """Replace the old volume with the new volume within the active server
-
-        :param context: User request context
-        :param old_volume_id: Original volume id
-        :param new_volume_id: New volume id being swapped to
-        :param instance: Instance with original_volume_id attached
-        :param new_attachment_id: ID of the new attachment for new_volume_id
-        """
-        @utils.synchronized(instance.uuid)
-        def _do_locked_swap_volume(context, old_volume_id, new_volume_id,
-                                   instance, new_attachment_id):
-            self._do_swap_volume(context, old_volume_id, new_volume_id,
-                                 instance, new_attachment_id)
-        _do_locked_swap_volume(context, old_volume_id, new_volume_id, instance,
-                               new_attachment_id)
-
-    def _do_swap_volume(self, context, old_volume_id, new_volume_id,
-                        instance, new_attachment_id):
-        """Replace the old volume with the new volume within the active server
-
-        :param context: User request context
-        :param old_volume_id: Original volume id
-        :param new_volume_id: New volume id being swapped to
-        :param instance: Instance with original_volume_id attached
-        :param new_attachment_id: ID of the new attachment for new_volume_id
-        """
+        """Swap volume for an instance."""
         context = context.elevated()
+
         compute_utils.notify_about_volume_swap(
             context, instance, self.host,
             fields.NotificationPhase.START,
@@ -6972,8 +6958,11 @@ class ComputeManager(manager.Manager):
                     #
                     # Also note that attachment_update is not needed as we
                     # are providing the connector in the create call.
+                    attach_mode = self.volume_api.attachment_get(context,
+                        bdm.attachment_id)['attach_mode']
                     attach_ref = self.volume_api.attachment_create(
                         context, bdm.volume_id, bdm.instance_uuid,
+                        attach_mode,
                         connector=connector, mountpoint=bdm.device_name)
 
                     # save current attachment so we can detach it on success,
@@ -6989,7 +6978,7 @@ class ComputeManager(manager.Manager):
                     bdm.save()
 
             block_device_info = self._get_instance_block_device_info(
-                                context, instance, refresh_conn_info=True,
+                                context, instance, refresh_conn_info=False,
                                 bdms=bdms)
 
             # The driver pre_live_migration will plug vifs on the host. We call
@@ -7527,13 +7516,7 @@ class ComputeManager(manager.Manager):
         # Releasing vlan.
         # (not necessary in current implementation?)
 
-        # NOTE(artom) At this point in time we have not bound the ports to the
-        # destination host yet (this happens in migrate_instance_start()
-        # below). Therefore, the "old" source network info that's still in the
-        # instance info cache is safe to use here, since it'll be used below
-        # during driver.post_live_migration_at_source() to unplug the VIFs on
-        # the source.
-        network_info = instance.get_network_info()
+        network_info = self.network_api.get_instance_nw_info(ctxt, instance)
 
         self._notify_about_instance_usage(ctxt, instance,
                                           "live_migration._post.start",
@@ -7775,55 +7758,6 @@ class ComputeManager(manager.Manager):
                 action=fields.NotificationAction.LIVE_MIGRATION_POST_DEST,
                 phase=fields.NotificationPhase.END)
 
-    def _remove_remote_volume_connections(self, context, dest, bdms, instance):
-        """Rollback remote volume connections on the dest"""
-        for bdm in bdms:
-            try:
-                # remove the connection on the destination host
-                # NOTE(lyarwood): This actually calls the cinderv2
-                # os-terminate_connection API if required.
-                self.compute_rpcapi.remove_volume_connection(
-                        context, instance, bdm.volume_id, dest)
-            except Exception:
-                LOG.warning("Ignoring exception while attempting "
-                            "to rollback volume connections for "
-                            "volume %s on host %s.", bdm.volume_id,
-                            dest, instance=instance)
-
-    def _rollback_volume_bdms(self, context, bdms, original_bdms, instance):
-        """Rollback the connection_info and attachment_id for each bdm"""
-        original_bdms_by_volid = {bdm.volume_id: bdm for bdm in original_bdms
-                                  if bdm.is_volume}
-        for bdm in bdms:
-            try:
-                original_bdm = original_bdms_by_volid[bdm.volume_id]
-                # NOTE(lyarwood): Only delete the referenced attachment if it
-                # is different to the original in order to avoid accidentally
-                # removing the source host volume attachment after it has
-                # already been rolled back by a failure in pre_live_migration.
-                if (bdm.attachment_id and original_bdm.attachment_id and
-                    bdm.attachment_id != original_bdm.attachment_id):
-                    # NOTE(lyarwood): 3.44 cinder api flow. Delete the
-                    # attachment used by the bdm and reset it to that of
-                    # the original bdm.
-                    self.volume_api.attachment_delete(context,
-                                                      bdm.attachment_id)
-                    bdm.attachment_id = original_bdm.attachment_id
-                # NOTE(lyarwood): Reset the connection_info to the original
-                bdm.connection_info = original_bdm.connection_info
-                bdm.save()
-            except cinder_exception.ClientException:
-                LOG.warning("Ignoring cinderclient exception when "
-                            "attempting to delete attachment %s for volume"
-                            "%s while rolling back volume bdms.",
-                            bdm.attachment_id, bdm.volume_id,
-                            instance=instance)
-            except Exception:
-                with excutils.save_and_reraise_exception():
-                    LOG.exception("Exception while attempting to rollback "
-                                  "BDM for volume %s.", bdm.volume_id,
-                                  instance=instance)
-
     @wrap_exception()
     @wrap_instance_fault
     def _rollback_live_migration(self, context, instance,
@@ -7892,18 +7826,35 @@ class ComputeManager(manager.Manager):
         self.driver.rollback_live_migration_at_source(context, instance,
                                                       migrate_data)
 
-        # NOTE(lyarwood): Fetch the current list of BDMs, disconnect any
-        # connected volumes from the dest and delete any volume attachments
-        # used by the destination host before rolling back to the original
-        # still valid source host volume attachments.
+        source_bdms_by_volid = {bdm.volume_id: bdm for bdm in source_bdms
+                                if bdm.is_volume}
+
+        # NOTE(lyarwood): Fetch the current list of BDMs and delete any volume
+        # attachments used by the destination host before rolling back to the
+        # original and still valid source host volume attachments.
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
-        # TODO(lyarwood): Turn the following into a lookup method within
-        # BlockDeviceMappingList.
-        vol_bdms = [bdm for bdm in bdms if bdm.is_volume]
-        self._remove_remote_volume_connections(context, dest, vol_bdms,
-                                               instance)
-        self._rollback_volume_bdms(context, vol_bdms, source_bdms, instance)
+        for bdm in bdms:
+            if bdm.is_volume:
+                # remove the connection on the destination host
+                # NOTE(lyarwood): This actually calls the cinderv2
+                # os-terminate_connection API if required.
+                self.compute_rpcapi.remove_volume_connection(
+                        context, instance, bdm.volume_id, dest)
+
+                source_bdm = source_bdms_by_volid[bdm.volume_id]
+                if bdm.attachment_id and source_bdm.attachment_id:
+                    # NOTE(lyarwood): 3.44 cinder api flow. Delete the
+                    # attachment used by the destination and reset the bdm
+                    # attachment_id to the old attachment of the source host.
+                    self.volume_api.attachment_delete(context,
+                                                      bdm.attachment_id)
+                    bdm.attachment_id = source_bdm.attachment_id
+
+                # NOTE(lyarwood): Rollback the connection_info stored within
+                # the BDM to that used by the source and not the destination.
+                bdm.connection_info = source_bdm.connection_info
+                bdm.save()
 
         self._notify_about_instance_usage(context, instance,
                                           "live_migration._rollback.start")
@@ -8849,16 +8800,17 @@ class ComputeManager(manager.Manager):
         :param startup: True if this is being called when the nova-compute
             service is starting, False otherwise.
         """
+
+        compute_nodes_in_db = self._get_compute_nodes_in_db(context,
+                                                            use_slave=True,
+                                                            startup=startup)
         try:
             nodenames = set(self.driver.get_available_nodes())
         except exception.VirtDriverNotReady:
             LOG.warning("Virt driver is not ready.")
             return
 
-        compute_nodes_in_db = self._get_compute_nodes_in_db(context,
-                                                            nodenames,
-                                                            use_slave=True,
-                                                            startup=startup)
+        self.rt.clean_compute_node_cache(compute_nodes_in_db)
 
         # Delete orphan compute node not reported by driver but still in db
         for cn in compute_nodes_in_db:
@@ -8879,24 +8831,19 @@ class ComputeManager(manager.Manager):
             self._update_available_resource_for_node(context, nodename,
                                                      startup=startup)
 
-    def _get_compute_nodes_in_db(self, context, nodenames, use_slave=False,
+    def _get_compute_nodes_in_db(self, context, use_slave=False,
                                  startup=False):
         try:
             return objects.ComputeNodeList.get_all_by_host(context, self.host,
                                                            use_slave=use_slave)
         except exception.NotFound:
-            # If the driver is not reporting any nodenames we should not
-            # expect there to be compute nodes so we just return in that case.
-            # For example, this could be an ironic compute and it is not
-            # managing any nodes yet.
-            if nodenames:
-                if startup:
-                    LOG.warning(
-                        "No compute node record found for host %s. If this is "
-                        "the first time this service is starting on this "
-                        "host, then you can ignore this warning.", self.host)
-                else:
-                    LOG.error("No compute node record for host %s", self.host)
+            if startup:
+                LOG.warning(
+                    "No compute node record found for host %s. If this is "
+                    "the first time this service is starting on this "
+                    "host, then you can ignore this warning.", self.host)
+            else:
+                LOG.error("No compute node record for host %s", self.host)
             return []
 
     @periodic_task.periodic_task(
@@ -9590,3 +9537,78 @@ class ComputeManager(manager.Manager):
             LOG.debug("Updating migrate VIF profile for port %(port_id)s:"
                       "%(profile)s", {'port_id': port_id,
                                       'profile': profile})
+
+    def get_volume_qos(self, context, instance):
+        bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+            context, instance.uuid)
+        LOG.debug("instance %s all bdms: %s",
+                  instance.uuid, bdms)
+        block_device_info = self._get_instance_block_device_info(
+            context, instance, bdms=bdms)
+        LOG.debug("get volume qos: block_device_info: %s", block_device_info)
+        return self.driver.get_volume_qos(context, instance=instance,
+                                          bdms=block_device_info)
+
+    def set_volume_qos(self, context, instance, qos_config):
+        bdms = []
+        qos_specs_dict = {}
+        all_bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
+            context, instance.uuid)
+        LOG.debug("instance %s all bdms: %s",
+                  instance.uuid, all_bdms)
+        for volume_qos_config in qos_config:
+            volume_id = volume_qos_config.get('volume_id')
+            device_name = volume_qos_config.get('device_name')
+            qos_specs = volume_qos_config.get('qos_specs')
+            # bdm = objects.BlockDeviceMapping.get_by_volume_and_instance(
+            #     context, volume_id, instance.uuid)
+            for bdm in all_bdms:
+                if bdm.volume_id == volume_id or bdm.device_name == device_name:
+                    bdms.append(bdm)
+                    break
+            else:
+                raise exception.DeviceNotFound(device=device_name)
+
+            device_name = device_name if device_name else bdm.device_name
+            qos_specs_dict[device_name] = qos_specs
+        bdms = obj_block_device.block_device_make_list(context, bdms)
+        block_device_info = self._get_instance_block_device_info(
+            context, instance, bdms=bdms)
+        LOG.debug("instance %s block_device_info: %s",
+                  instance.uuid, block_device_info)
+        LOG.debug("instance %s qos_specs_dict: %s",
+                  instance.uuid, qos_specs_dict)
+        for bdm in block_device_info.get('block_device_mapping', []):
+            connection_info = bdm.get('connection_info', {})
+            volume_id = connection_info.get('volume_id')
+            device_name = bdm.get('mount_device')
+            qos_specs = qos_specs_dict[device_name]
+            data = connection_info.get('data', {})
+            ori_qos_specs = data.get('qos_specs')
+            ori_qos_specs = ori_qos_specs if ori_qos_specs else {}
+            ori_qos_specs.update(qos_specs)
+            connection_info['data']['qos_specs'] = qos_specs
+            bdm.save()
+
+        ret = {}
+        if instance.vm_state == vm_states.ACTIVE:
+            for i in range(3):
+                try:
+                    ret = self.driver.set_volume_qos(context, instance=instance,
+                                                     bdms=block_device_info)
+                    break
+                except BaseException as e:
+                    LOG.warn("Set volume qos error: %s", str(e))
+                    time.sleep(1)
+                    LOG.info("Try set voluem qos %d", i+1)
+            else:
+                LOG.error("Set volume qos failed in libvirt.")
+        return ret
+
+    def _set_qos_from_block_device_mapping(self, context,
+                                           instance, block_device_mapping):
+        bdms = obj_block_device.block_device_make_list(context,
+                                                       block_device_mapping)
+        qos = self.set_volume_qos(context, instance, block_device_mapping)
+        LOG.info("set instance %s qos: %s", instance.uuid, qos)
+

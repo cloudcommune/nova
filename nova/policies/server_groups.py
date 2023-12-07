@@ -34,6 +34,28 @@ server_groups_policies = [
         ]
     ),
     policy.DocumentedRuleDefault(
+        POLICY_ROOT % 'add_members',
+        base.RULE_ADMIN_OR_OWNER,
+        "Add members into a server group",
+        [
+            {
+                'path': '/os-server-groups/{server_group_id}/action',
+                'method': 'POST'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
+        POLICY_ROOT % 'remove_members',
+        base.RULE_ADMIN_OR_OWNER,
+        "remove members from a server group",
+        [
+            {
+                'path': '/os-server-groups/{server_group_id}/action',
+                'method': 'POST'
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'delete',
         base.RULE_ADMIN_OR_OWNER,
         "Delete a server group",

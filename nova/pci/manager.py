@@ -225,7 +225,6 @@ class PciDevTracker(object):
                     self.stale[new_value['address']] = new_value
                 else:
                     existed.update_device(new_value)
-                    self.stats.update_device(existed)
 
         # Track newly discovered devices.
         for dev in [dev for dev in devices if

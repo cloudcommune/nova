@@ -24,7 +24,6 @@ import functools
 import sys
 
 from cinderclient import api_versions as cinder_api_versions
-from cinderclient import apiclient as cinder_apiclient
 from cinderclient import client as cinder_client
 from cinderclient import exceptions as cinder_exception
 from keystoneauth1 import exceptions as keystone_exception
@@ -34,7 +33,6 @@ from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
 from oslo_utils import excutils
 from oslo_utils import strutils
-import retrying
 import six
 from six.moves import urllib
 
@@ -502,6 +500,11 @@ class API(object):
             context, microversion=microversion).volumes.get(volume_id)
         return _untranslate_volume_summary_view(context, item)
 
+    @translate_volume_exception
+    def get_detal(self, context, volume_id, microversion=None):
+        return cinderclient(
+            context, microversion=microversion).volumes.get(volume_id)
+
     @translate_cinder_exception
     def get_all(self, context, search_opts=None):
         search_opts = search_opts or {}
@@ -568,9 +571,6 @@ class API(object):
                                              mountpoint, mode=mode)
 
     @translate_volume_exception
-    @retrying.retry(stop_max_attempt_number=5,
-                    retry_on_exception=lambda e:
-                    type(e) == cinder_apiclient.exceptions.InternalServerError)
     def detach(self, context, volume_id, instance_uuid=None,
                attachment_id=None):
         client = cinderclient(context)
@@ -634,9 +634,6 @@ class API(object):
                                 exc.code if hasattr(exc, 'code') else None)})
 
     @translate_volume_exception
-    @retrying.retry(stop_max_attempt_number=5,
-                    retry_on_exception=lambda e:
-                    type(e) == cinder_apiclient.exceptions.InternalServerError)
     def terminate_connection(self, context, volume_id, connector):
         return cinderclient(context).volumes.terminate_connection(volume_id,
                                                                   connector)
@@ -762,6 +759,7 @@ class API(object):
 
     @translate_volume_exception
     def attachment_create(self, context, volume_id, instance_id,
+                          attach_mode='rw',
                           connector=None, mountpoint=None):
         """Create a volume attachment. This requires microversion >= 3.44.
 
@@ -795,8 +793,9 @@ class API(object):
             _connector['mountpoint'] = mountpoint
 
         try:
-            attachment_ref = cinderclient(context, '3.44').attachments.create(
-                volume_id, _connector, instance_id)
+            attachment_ref = cinderclient(context, '3.54',
+                skip_version_check=True).attachments.create(
+                volume_id, _connector, instance_id, mode=attach_mode)
             return _translate_attachment_ref(attachment_ref)
         except cinder_exception.ClientException as ex:
             with excutils.save_and_reraise_exception():
@@ -883,9 +882,6 @@ class API(object):
                            'code': getattr(ex, 'code', None)})
 
     @translate_attachment_exception
-    @retrying.retry(stop_max_attempt_number=5,
-                    retry_on_exception=lambda e:
-                    type(e) == cinder_apiclient.exceptions.InternalServerError)
     def attachment_delete(self, context, attachment_id):
         try:
             cinderclient(

@@ -1009,6 +1009,14 @@ class ComputeAPI(object):
         return cctxt.call(ctxt, 'set_admin_password',
                           instance=instance, new_pass=new_pass)
 
+    def qemu_agent_command(self, ctxt, instance, execute, arguments):
+        version = '5.0'
+        cctxt = self.router.client(ctxt).prepare(
+                server=_compute_host(None, instance),
+                version=version)
+        return cctxt.call(ctxt, 'qemu_agent_command', instance=instance,
+                          execute=execute, arguments=arguments)
+
     def set_host_enabled(self, ctxt, host, enabled):
         version = '5.0'
         cctxt = self.router.client(ctxt).prepare(
@@ -1188,7 +1196,7 @@ class ComputeAPI(object):
             filter_properties, admin_password=None, injected_files=None,
             requested_networks=None, security_groups=None,
             block_device_mapping=None, node=None, limits=None,
-            host_list=None):
+            host_list=None, qos_config=None):
         # NOTE(edleafe): compute nodes can only use the dict form of limits.
         if isinstance(limits, objects.SchedulerLimits):
             limits = limits.to_dict()
@@ -1203,8 +1211,9 @@ class ComputeAPI(object):
                   "block_device_mapping": block_device_mapping,
                   "node": node,
                   "limits": limits,
-                  "host_list": host_list,
-                 }
+                  "host_list": host_list}
+        if qos_config is not None:
+            kwargs["qos_config"] = qos_config
         client = self.router.client(ctxt)
         version = '5.0'
         cctxt = client.prepare(server=host, version=version)
@@ -1237,3 +1246,18 @@ class ComputeAPI(object):
         cctxt = client.prepare(server=_compute_host(None, instance),
                 version=version)
         return cctxt.cast(ctxt, "trigger_crash_dump", instance=instance)
+
+    def get_volume_qos(self, ctxt, instance):
+        version = '5.0'
+        client = self.router.client(ctxt)
+        cctxt = client.prepare(server=_compute_host(None, instance),
+                               version=version)
+        return cctxt.call(ctxt, "get_volume_qos", instance=instance)
+
+    def set_volume_qos(self, ctxt, instance, qos_config):
+        version = '5.0'
+        client = self.router.client(ctxt)
+        cctxt = client.prepare(server=_compute_host(None, instance),
+                               version=version)
+        return cctxt.call(ctxt, "set_volume_qos", instance=instance,
+                          qos_config=qos_config)

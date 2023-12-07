@@ -90,6 +90,9 @@ class LibvirtBaseVolumeDriver(object):
                 raise exception.InvalidVolumeAccessMode(
                     access_mode=access_mode)
 
+        if disk_info['attach_mode'] == 'ro':
+            conf.readonly = True
+
         # Configure usage of discard
         if data.get('discard', False) is True:
             conf.driver_discard = 'unmap'

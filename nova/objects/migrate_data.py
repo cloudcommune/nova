@@ -172,6 +172,7 @@ class LibvirtLiveMigrateBDMInfo(obj_base.NovaObject):
         'boot_index': fields.IntegerField(nullable=True),
         'connection_info_json': fields.StringField(),
         'encryption_secret_uuid': fields.UUIDField(nullable=True),
+        'attach_mode': fields.StringField(nullable=True),
     }
 
     def obj_make_compatible(self, primitive, target_version):
@@ -199,6 +200,7 @@ class LibvirtLiveMigrateBDMInfo(obj_base.NovaObject):
             'dev': self.dev,
             'bus': self.bus,
             'type': self.type,
+            'attach_mode': self.attach_mode,
         }
         if self.obj_attr_is_set('format') and self.format:
             info_dict['format'] = self.format

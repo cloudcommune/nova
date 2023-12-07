@@ -481,7 +481,8 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
             try:
                 virt_driver.attach_volume(
                         context, connection_info, instance,
-                        self['mount_device'], disk_bus=self['disk_bus'],
+                        self['mount_device'],
+                        disk_bus=self['disk_bus'],
                         device_type=self['device_type'], encryption=encryption)
             except Exception:
                 with excutils.save_and_reraise_exception():
@@ -552,9 +553,10 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
 
         LOG.debug("Updating existing volume attachment record: %s",
                   attachment_id, instance=instance)
-        connection_info = volume_api.attachment_update(
+        attachment = volume_api.attachment_update(
             context, attachment_id, connector,
-            self['mount_device'])['connection_info']
+            self['mount_device'])
+        connection_info = attachment['connection_info']
         if 'serial' not in connection_info:
             connection_info['serial'] = self.volume_id
         self._preserve_multipath_id(connection_info)
@@ -571,6 +573,8 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
             # value.
             connection_info['multiattach'] = True
 
+        LOG.debug('attachment=%(attachment)s', {'attachment': attachment})
+        attach_mode = attachment['attach_mode']
         if do_driver_attach:
             encryption = encryptors.get_encryption_metadata(
                 context, volume_api, volume_id, connection_info)
@@ -578,7 +582,8 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
             try:
                 virt_driver.attach_volume(
                         context, connection_info, instance,
-                        self['mount_device'], disk_bus=self['disk_bus'],
+                        self['mount_device'], attach_mode,
+                        disk_bus=self['disk_bus'],
                         device_type=self['device_type'], encryption=encryption)
             except Exception:
                 with excutils.save_and_reraise_exception():
@@ -633,6 +638,8 @@ class DriverVolumeBlockDevice(DriverBlockDevice):
         """
         context = context.elevated()
         connector = virt_driver.get_volume_connector(instance)
+        LOG.debug('attachment_id=%(attachment_id)s',
+            {'attachment_id': self['attachment_id']})
         if not self['attachment_id']:
             self._legacy_volume_attach(context, volume, connector, instance,
                                        volume_api, virt_driver,

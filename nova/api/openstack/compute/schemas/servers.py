@@ -85,6 +85,7 @@ block_device_mapping_v2_new_item = {
         'type': ['integer', 'string', 'null'],
         'pattern': '^-?[0-9]+$',
     },
+    'qos_specs': parameter_types.qos_specs,
 }
 
 block_device_mapping_v2 = copy.deepcopy(legacy_block_device_mapping)

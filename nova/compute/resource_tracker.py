@@ -1801,3 +1801,16 @@ class ResourceTracker(object):
         """
         self.pci_tracker.free_instance_claims(context, instance)
         self.pci_tracker.save(context)
+
+    @utils.synchronized(COMPUTE_RESOURCE_SEMAPHORE, fair=True)
+    def clean_compute_node_cache(self, compute_nodes_in_db):
+        """Clean the compute node cache of any nodes that no longer exist.
+
+        :param compute_nodes_in_db: list of ComputeNode objects from the DB.
+        """
+        compute_nodes_in_db_nodenames = {cn.hypervisor_hostname
+                                         for cn in compute_nodes_in_db}
+        stale_cns = set(self.compute_nodes) - compute_nodes_in_db_nodenames
+
+        for stale_cn in stale_cns:
+            self.remove_node(stale_cn)

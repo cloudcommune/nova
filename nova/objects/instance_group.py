@@ -339,6 +339,17 @@ class InstanceGroup(base.NovaPersistentObject, base.NovaObject,
 
     @staticmethod
     @db_api.api_context_manager.writer
+    def _remove_members_in_db_by_group_uuid(context, group_uuid, members):
+        qry = _instance_group_get_query(context,
+                                        id_field=api_models.InstanceGroup.uuid,
+                                        id=group_uuid)
+        if qry.count() == 0:
+            raise exception.InstanceGroupNotFound(group_uuid=group_uuid)
+        group_id = qry.first().id
+        InstanceGroup._remove_members_in_db(context, group_id, members)
+
+    @staticmethod
+    @db_api.api_context_manager.writer
     def _destroy_members_bulk_in_db(context, instance_uuids):
         return context.session.query(api_models.InstanceGroupMember).filter(
             api_models.InstanceGroupMember.instance_uuid.in_(instance_uuids)).\
@@ -483,6 +494,16 @@ class InstanceGroup(base.NovaPersistentObject, base.NovaObject,
                                                        "addmember", payload)
         compute_utils.notify_about_server_group_add_member(context, group_uuid)
         return list(members)
+
+    @base.remotable_classmethod
+    def remove_members(cls, context, group_uuid, instance_uuids):
+        payload = {'server_group_id': group_uuid,
+                   'instance_uuids': instance_uuids}
+        cls._remove_members_in_db_by_group_uuid(context, group_uuid,
+                                                instance_uuids)
+        compute_utils.notify_about_server_group_update(context,
+                                                       "removemember",
+                                                       payload)
 
     @base.remotable
     def get_hosts(self, exclude=None):

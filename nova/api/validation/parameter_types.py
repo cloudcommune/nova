@@ -239,6 +239,30 @@ name_or_none = {
 }
 
 
+qemu_agent_command_execute = {
+    'type': 'string',
+    'enum': ["guest-info", "guest-set-user-password",
+             "guest-set-vcpus", "guest-get-vcpus",
+             "guest-network-get-interfaces",
+             "guest-suspend-hybrid", "guest-suspend-ram",
+             "guest-suspend-disk", "guest-fstrim",
+             "guest-fsfreeze-thaw", "guest-fsfreeze-freeze",
+             "guest-fsfreeze-status", "guest-file-flush",
+             "guest-file-seek", "guest-file-write",
+             "guest-file-read", "guest-file-open",
+             "guest-file-close", "guest-shutdown",
+             "guest-set-time", "guest-get-time",
+             "guest-ping", "guest-sync", "guest-sync-delimited",
+             "guest-add-sshkey", "guest-delete-sshkey",
+             "guest-shell-script-control"],
+}
+
+
+qemu_agent_command_arguments = {
+    'type': 'object'
+}
+
+
 positive_integer = {
     'type': ['integer', 'string'],
     'pattern': '^[0-9]*$', 'minimum': 1, 'minLength': 1
@@ -489,4 +513,9 @@ trusted_certs = {
         "type": "string",
         "minLength": 1,
     }
+}
+
+qos_specs = {
+    'type': 'object',
+    'additionalProperties': True,
 }

@@ -11,7 +11,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
 import copy
 
 from nova.api.validation import parameter_types
@@ -28,18 +27,15 @@ create = {
                 'name': parameter_types.name,
                 'policies': {
                     # This allows only a single item and it must be one of the
-                    # enumerated values. It's changed to a single string value
-                    # in 2.64.
+                    # enumerated values. So this is really just a single string
+                    # value, but for legacy reasons is an array. We could
+                    # probably change the type from array to string with a
+                    # microversion at some point but it's very low priority.
                     'type': 'array',
-                    'items': [
-                        {
-                            'type': 'string',
-                            'enum': ['anti-affinity', 'affinity'],
-                        },
-                    ],
+                    'items': [{
+                        'type': 'string',
+                        'enum': ['anti-affinity', 'affinity']}],
                     'uniqueItems': True,
-                    'minItems': 1,
-                    'maxItems': 1,
                     'additionalItems': False,
                 }
             },
@@ -48,6 +44,54 @@ create = {
         }
     },
     'required': ['server_group'],
+    'additionalProperties': False,
+}
+
+add_members = {
+    'type': 'object',
+    'properties': {
+        'add_members': {
+            'type': 'object',
+            'properties': {
+                'members': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'string', 'minLength': 1, 'maxLength': 255,
+                        'pattern': '^(?! )[a-zA-Z0-9. _-]+(?<! )$'
+                    },
+                    'minItems': 0,
+                    'uniqueItems': True,
+                },
+            },
+            'required': ['members'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['add_members'],
+    'additionalProperties': False,
+}
+
+remove_members = {
+    'type': 'object',
+    'properties': {
+        'remove_members': {
+            'type': 'object',
+            'properties': {
+                'members': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'string', 'minLength': 1, 'maxLength': 255,
+                        'pattern': '^(?! )[a-zA-Z0-9. _-]+(?<! )$'
+                    },
+                    'minItems': 0,
+                    'uniqueItems': True,
+                },
+            },
+            'required': ['members'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['remove_members'],
     'additionalProperties': False,
 }
 

@@ -430,6 +430,8 @@ class RealRolePolicyTestCase(test.NoDBTestCase):
 "os_compute_api:os-server-groups:show",
 "os_compute_api:os-server-groups:create",
 "os_compute_api:os-server-groups:delete",
+"os_compute_api:os-server-groups:add_members",
+"os_compute_api:os-server-groups:remove_members",
 "os_compute_api:os-shelve:shelve",
 "os_compute_api:os-shelve:unshelve",
 "os_compute_api:os-volumes",

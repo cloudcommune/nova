@@ -173,8 +173,7 @@ def get_client(context, admin=False):
     session = _get_session()
     client_args = dict(session=session,
                        auth=auth_plugin,
-                       global_request_id=context.global_id,
-                       connect_retries=CONF.neutron.http_retries)
+                       global_request_id=context.global_id)
 
     # NOTE(efried): We build an adapter
     #               to pull conf options

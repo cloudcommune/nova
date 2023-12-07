@@ -1247,29 +1247,6 @@ class ComputeTaskManager(base.Base):
         else:
             return tags
 
-    def _create_instance_action_for_cell0(self, context, instance, exc):
-        """Create a failed "create" instance action for the instance in cell0.
-
-        :param context: nova auth RequestContext targeted at cell0
-        :param instance: Instance object being buried in cell0
-        :param exc: Exception that occurred which resulted in burial
-        """
-        # First create the action record.
-        objects.InstanceAction.action_start(
-            context, instance.uuid, instance_actions.CREATE, want_result=False)
-        # Now create an event for that action record.
-        event_name = 'conductor_schedule_and_build_instances'
-        objects.InstanceActionEvent.event_start(
-            context, instance.uuid, event_name, want_result=False,
-            host=self.host)
-        # And finish the event with the exception. Note that we expect this
-        # method to be called from _bury_in_cell0 which is called from within
-        # an exception handler so sys.exc_info should return values but if not
-        # it's not the end of the world - this is best effort.
-        objects.InstanceActionEvent.event_finish_with_failure(
-            context, instance.uuid, event_name, exc_val=exc,
-            exc_tb=sys.exc_info()[2], want_result=False)
-
     def _bury_in_cell0(self, context, request_spec, exc,
                        build_requests=None, instances=None,
                        block_device_mapping=None,
@@ -1307,41 +1284,8 @@ class ComputeTaskManager(base.Base):
 
         updates = {'vm_state': vm_states.ERROR, 'task_state': None}
         for instance in instances_by_uuid.values():
-
-            inst_mapping = None
-            try:
-                # We don't need the cell0-targeted context here because the
-                # instance mapping is in the API DB.
-                inst_mapping = \
-                    objects.InstanceMapping.get_by_instance_uuid(
-                        context, instance.uuid)
-            except exception.InstanceMappingNotFound:
-                # The API created the instance mapping record so it should
-                # definitely be here. Log an error but continue to create the
-                # instance in the cell0 database.
-                LOG.error('While burying instance in cell0, no instance '
-                          'mapping was found.', instance=instance)
-
-            # Perform a final sanity check that the instance is not mapped
-            # to some other cell already because of maybe some crazy
-            # clustered message queue weirdness.
-            if inst_mapping and inst_mapping.cell_mapping is not None:
-                LOG.error('When attempting to bury instance in cell0, the '
-                          'instance is already mapped to cell %s. Ignoring '
-                          'bury in cell0 attempt.',
-                          inst_mapping.cell_mapping.identity,
-                          instance=instance)
-                continue
-
             with obj_target_cell(instance, cell0) as cctxt:
                 instance.create()
-                if inst_mapping:
-                    inst_mapping.cell_mapping = cell0
-                    inst_mapping.save()
-
-                # Record an instance action with a failed event.
-                self._create_instance_action_for_cell0(
-                    cctxt, instance, exc)
 
                 # NOTE(mnaser): In order to properly clean-up volumes after
                 #               being buried in cell0, we need to store BDMs.
@@ -1357,6 +1301,16 @@ class ComputeTaskManager(base.Base):
                 self._set_vm_state_and_notify(
                     cctxt, instance.uuid, 'build_instances', updates,
                     exc, request_spec)
+                try:
+                    # We don't need the cell0-targeted context here because the
+                    # instance mapping is in the API DB.
+                    inst_mapping = \
+                        objects.InstanceMapping.get_by_instance_uuid(
+                            context, instance.uuid)
+                    inst_mapping.cell_mapping = cell0
+                    inst_mapping.save()
+                except exception.InstanceMappingNotFound:
+                    pass
 
         for build_request in build_requests:
             try:
@@ -1371,7 +1325,7 @@ class ComputeTaskManager(base.Base):
                                      request_specs, image,
                                      admin_password, injected_files,
                                      requested_networks, block_device_mapping,
-                                     tags=None):
+                                     tags=None, qos_config=None):
         # Add all the UUIDs for the instances
         instance_uuids = [spec.instance_uuid for spec in request_specs]
         try:
@@ -1525,8 +1479,13 @@ class ComputeTaskManager(base.Base):
             instance.tags = instance_tags if instance_tags \
                 else objects.TagList()
 
-            # Update mapping for instance.
-            self._map_instance_to_cell(context, instance, cell)
+            # Update mapping for instance. Normally this check is guarded by
+            # a try/except but if we're here we know that a newer nova-api
+            # handled the build process and would have created the mapping
+            inst_mapping = objects.InstanceMapping.get_by_instance_uuid(
+                context, instance.uuid)
+            inst_mapping.cell_mapping = cell
+            inst_mapping.save()
 
             if not self._delete_build_request(
                     context, build_request, instance, cell, instance_bdms,
@@ -1542,6 +1501,11 @@ class ComputeTaskManager(base.Base):
             legacy_secgroups = [s.identifier
                                 for s in request_spec.security_groups]
             with obj_target_cell(instance, cell) as cctxt:
+                kwargs = {}
+                if qos_config is not None:
+                    kwargs['qos_config'] = qos_config
+                LOG.debug("Set volume qos in schedule_and_build_instances to %s"
+                          " with qos_config: %s", host.nodename, qos_config)
                 self.compute_rpcapi.build_and_run_instance(
                     cctxt, instance=instance, image=image,
                     request_spec=request_spec,
@@ -1552,38 +1516,7 @@ class ComputeTaskManager(base.Base):
                     security_groups=legacy_secgroups,
                     block_device_mapping=instance_bdms,
                     host=host.service_host, node=host.nodename,
-                    limits=host.limits, host_list=host_list)
-
-    @staticmethod
-    def _map_instance_to_cell(context, instance, cell):
-        """Update the instance mapping to point at the given cell.
-
-        During initial scheduling once a host and cell is selected in which
-        to build the instance this method is used to update the instance
-        mapping to point at that cell.
-
-        :param context: nova auth RequestContext
-        :param instance: Instance object being built
-        :param cell: CellMapping representing the cell in which the instance
-            was created and is being built.
-        :returns: InstanceMapping object that was updated.
-        """
-        inst_mapping = objects.InstanceMapping.get_by_instance_uuid(
-            context, instance.uuid)
-        # Perform a final sanity check that the instance is not mapped
-        # to some other cell already because of maybe some crazy
-        # clustered message queue weirdness.
-        if inst_mapping.cell_mapping is not None:
-            LOG.error('During scheduling instance is already mapped to '
-                      'another cell: %s. This should not happen and is an '
-                      'indication of bigger problems. If you see this you '
-                      'should report it to the nova team. Overwriting '
-                      'the mapping to point at cell %s.',
-                      inst_mapping.cell_mapping.identity, cell.identity,
-                      instance=instance)
-        inst_mapping.cell_mapping = cell
-        inst_mapping.save()
-        return inst_mapping
+                    limits=host.limits, host_list=host_list, **kwargs)
 
     def _cleanup_build_artifacts(self, context, exc, instances, build_requests,
                                  request_specs, block_device_mappings, tags,

@@ -222,3 +222,74 @@ class ServerGroupController(wsgi.Controller):
                 raise exc.HTTPForbidden(explanation=msg)
 
         return {'server_group': self._format_server_group(context, sg, req)}
+
+    @wsgi.expected_errors((400, 404, 409))
+    @validation.schema(schema.add_members)
+    @wsgi.action("add_members")
+    def _add_members(self, req, id, body):
+        """Add members to the specified server group."""
+        context = _authorize_context(req, 'add_members')
+        vals = body['add_members']
+        members = vals.get('members', [])
+        existing_members = []
+        try:
+            sg = objects.InstanceGroup.get_by_uuid(context, id)
+            for member in members:
+                if member in sg.members:
+                    existing_members.append(member)
+                else:
+                    try:
+                        sg = objects.InstanceGroup.get_by_instance_uuid(
+                            context, member)
+                        if sg is not None:
+                            raise nova.exception.InstanceGroupMemberExists(
+                                group_uuid=sg.uuid, instance_id=member)
+                    except nova.exception.InstanceGroupNotFound:
+                        pass
+            if existing_members:
+                raise nova.exception.InstanceGroupMemberExists(
+                    group_uuid=id, instance_id=existing_members)
+            sg.add_members(context, id, members)
+        except nova.exception.InstanceGroupNotFound as e:
+            raise webob.exc.HTTPNotFound(explanation=e.format_message())
+        except nova.exception.InstanceGroupMemberExists as e:
+            raise webob.exc.HTTPConflict(explanation=e.format_message())
+        sg = objects.InstanceGroup.get_by_uuid(context, id)
+        for member in members:
+            request_spec = objects.RequestSpec.get_by_instance_uuid(
+                context, member)
+            request_spec.instance_group = sg
+            request_spec.save()
+        return {'server_group': self._format_server_group(context,
+                                                          sg, req)}
+
+    @wsgi.expected_errors((400, 404))
+    @validation.schema(schema.remove_members)
+    @wsgi.action("remove_members")
+    def _remove_members(self, req, id, body):
+        """Remove members from the specified server group."""
+        context = _authorize_context(req, 'remove_members')
+        vals = body['remove_members']
+        members = vals.get('members', [])
+        invalid_members = []
+        try:
+            sg = objects.InstanceGroup.get_by_uuid(context, id)
+            for member in members:
+                if member not in sg.members:
+                    invalid_members.append(member)
+            if invalid_members:
+                raise nova.exception.InstanceGroupMemberNotFound(
+                            group_uuid=id, instance_id=invalid_members)
+            sg.remove_members(context, id, members)
+        except nova.exception.InstanceGroupNotFound as e:
+            raise webob.exc.HTTPNotFound(explanation=e.format_message())
+        except nova.exception.InstanceGroupMemberNotFound as e:
+            raise webob.exc.HTTPNotFound(explanation=e.format_message())
+        sg = objects.InstanceGroup.get_by_uuid(context, id)
+        for member in members:
+            request_spec = objects.RequestSpec.get_by_instance_uuid(
+                context, member)
+            request_spec.instance_group = None
+            request_spec.save()
+        return {'server_group': self._format_server_group(context,
+                                                          sg, req)}

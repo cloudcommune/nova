@@ -136,11 +136,9 @@ class ServerActionsControllerTestV21(test.TestCase):
                               eval(controller_function),
                               self.req, instance['uuid'],
                               body=body_map.get(action))
-            expected_attrs = ['flavor', 'numa_topology']
-            if method == 'resize':
-                expected_attrs.append('services')
+
             mock_get.assert_called_once_with(self.context, uuid,
-                expected_attrs=expected_attrs,
+                expected_attrs=['flavor', 'numa_topology'],
                 cell_down_support=False)
             mock_method.assert_called_once_with(self.context, instance,
                                                 *args, **kwargs)
@@ -637,21 +635,6 @@ class ServerActionsControllerTestV21(test.TestCase):
 
         mock_rebuild.side_effect = exception.AutoDiskConfigDisabledByImage(
             image='dummy')
-
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          self.controller._action_rebuild,
-                          self.req, FAKE_UUID, body=body)
-
-    @mock.patch.object(compute_api.API, 'rebuild')
-    def test_rebuild_raise_invalid_volume_exc(self, mock_rebuild):
-        """Make sure that we can't rebuild with an InvalidVolume exception."""
-        body = {
-            "rebuild": {
-                "imageRef": self._image_href,
-            },
-        }
-
-        mock_rebuild.side_effect = exception.InvalidVolume('error')
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller._action_rebuild,

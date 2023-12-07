@@ -60,8 +60,7 @@ Possible Values:
 
   ``device_type``
     Type of PCI device. Valid values are: ``type-PCI``, ``type-PF`` and
-    ``type-VF``. Note that ``"device_type": "type-PF"`` **must** be specified
-    if you wish to passthrough a device that supports SR-IOV in its entirety.
+    ``type-VF``.
 
   ``numa_policy``
     Required NUMA affinity of device. Valid values are: ``legacy``,

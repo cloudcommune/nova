@@ -1079,7 +1079,7 @@ object_data = {
     'InstanceExternalEvent': '1.3-e47782874cca95bb96e566286e9d1e23',
     'InstanceFault': '1.2-7ef01f16f1084ad1304a513d6d410a38',
     'InstanceFaultList': '1.2-6bb72de2872fe49ded5eb937a93f2451',
-    'InstanceGroup': '1.11-852ac511d30913ee88f3c3a869a8f30a',
+    'InstanceGroup': '1.11-55e0d131b9912b02e7a37cc19b24c226',
     'InstanceGroupList': '1.8-90f8f1a445552bb3bbc9fa1ae7da27d4',
     'InstanceInfoCache': '1.5-cd8b96fefe0fc8d4d337243ba0bf0e1e',
     'InstanceList': '2.6-238f125650c25d6d12722340d726f723',

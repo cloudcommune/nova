@@ -45,6 +45,7 @@ from nova.virt import hardware
 from nova.virt.libvirt import config as vconfig
 
 libvirt = None
+libvirt_qemu = None
 
 LOG = logging.getLogger(__name__)
 
@@ -83,6 +84,10 @@ class Guest(object):
         global libvirt
         if libvirt is None:
             libvirt = importutils.import_module('libvirt')
+
+        global libvirt_qemu
+        if libvirt_qemu is None:
+            libvirt_qemu = importutils.import_module('libvirt_qemu')
 
         self._domain = domain
 
@@ -367,10 +372,9 @@ class Guest(object):
         return devs
 
     def detach_device_with_retry(self, get_device_conf_func, device, live,
-                                 max_retry_count=7, inc_sleep_time=10,
-                                 max_sleep_time=60,
-                                 alternative_device_name=None,
-                                 supports_device_missing_error_code=False):
+                                 max_retry_count=7, inc_sleep_time=2,
+                                 max_sleep_time=30,
+                                 alternative_device_name=None):
         """Detaches a device from the guest. After the initial detach request,
         a function is returned which can be used to ensure the device is
         successfully removed from the guest domain (retrying the removal as
@@ -391,16 +395,8 @@ class Guest(object):
                                max_sleep_time will be used as the sleep time.
         :param alternative_device_name: This is an alternative identifier for
             the device if device is not an ID, used solely for error messages.
-        :param supports_device_missing_error_code: does the installed version
-                                                   of libvirt provide the
-                                                   VIR_ERR_DEVICE_MISSING error
-                                                   code.
         """
         alternative_device_name = alternative_device_name or device
-        unplug_libvirt_error_codes = set([
-            libvirt.VIR_ERR_OPERATION_FAILED,
-            libvirt.VIR_ERR_INTERNAL_ERROR
-        ])
 
         def _try_detach_device(conf, persistent=False, live=False):
             # Raise DeviceNotFound if the device isn't found during detach
@@ -414,23 +410,14 @@ class Guest(object):
             except libvirt.libvirtError as ex:
                 with excutils.save_and_reraise_exception(reraise=False) as ctx:
                     errcode = ex.get_error_code()
-                    # TODO(lyarwood): Remove libvirt.VIR_ERR_OPERATION_FAILED
-                    # and libvirt.VIR_ERR_INTERNAL_ERROR once
-                    # MIN_LIBVIRT_VERSION is >= 4.1.0
-                    if supports_device_missing_error_code:
-                        unplug_libvirt_error_codes.add(
-                            libvirt.VIR_ERR_DEVICE_MISSING)
-                    if errcode in unplug_libvirt_error_codes:
-                        # TODO(lyarwood): Remove the following error message
-                        # check once we only care about VIR_ERR_DEVICE_MISSING
+                    if errcode in (libvirt.VIR_ERR_OPERATION_FAILED,
+                                   libvirt.VIR_ERR_INTERNAL_ERROR):
                         errmsg = ex.get_error_message()
                         if 'not found' in errmsg:
                             # This will be raised if the live domain
                             # detach fails because the device is not found
                             raise exception.DeviceNotFound(
                                 device=alternative_device_name)
-                    # TODO(lyarwood): Remove libvirt.VIR_ERR_INVALID_ARG once
-                    # MIN_LIBVIRT_VERSION is >= 4.1.0
                     elif errcode == libvirt.VIR_ERR_INVALID_ARG:
                         errmsg = ex.get_error_message()
                         if 'no target device' in errmsg:
@@ -533,6 +520,10 @@ class Guest(object):
     def set_user_password(self, user, new_pass):
         """Configures a new user password."""
         self._domain.setUserPassword(user, new_pass, 0)
+
+    def qemu_agent_command(self, cmd, timeout, flags):
+        """use qemu guest agent command"""
+        return libvirt_qemu.qemuAgentCommand(self._domain, cmd, timeout, flags)
 
     def _get_domain_info(self):
         """Returns information on Guest.
@@ -660,7 +651,6 @@ class Guest(object):
 
         if destination_xml:
             params['destination_xml'] = destination_xml
-            params['persistent_xml'] = destination_xml
         if migrate_disks:
             params['migrate_disks'] = migrate_disks
         if migrate_uri:
@@ -738,6 +728,15 @@ class Guest(object):
                 return JobInfo._get_job_stats_compat(self._domain)
         else:
             return JobInfo._get_job_stats_compat(self._domain)
+
+    def get_block_io_tune(self, disk):
+        return self._domain.blockIoTune(disk)
+
+    def set_block_io_tune(self, disk, qos_config, is_living=True):
+        flag = 0
+        if is_living:
+            flag = flag | libvirt.VIR_DOMAIN_AFFECT_LIVE
+        return self._domain.setBlockIoTune(disk, qos_config, flag)
 
 
 class BlockDevice(object):

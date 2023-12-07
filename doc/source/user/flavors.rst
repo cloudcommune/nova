@@ -706,14 +706,10 @@ Hiding hypervisor signature
      As of the 18.0.0 Rocky release, this is only supported by the libvirt
      driver.
 
-     Prior to the 21.0.0 Ussuri release, this was called
-     ``hide_hypervisor_id``. An alias is provided to provide backwards
-     compatibility.
-
   .. code:: console
 
      $ openstack flavor set FLAVOR-NAME \
-         --property hw:hide_hypervisor_id=VALUE
+         --property hide_hypervisor_id=VALUE
 
   Where:
 

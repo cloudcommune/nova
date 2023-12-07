@@ -544,7 +544,7 @@ def supports_multiattach_volume(req):
     :returns: True if the requested API microversion is high enough for
         volume multiattach support, False otherwise.
     """
-    return api_version_request.is_supported(req, '2.60')
+    return api_version_request.is_supported(req, '2.0')
 
 
 def supports_port_resource_request(req):

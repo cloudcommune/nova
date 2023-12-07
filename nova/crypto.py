@@ -88,7 +88,8 @@ def generate_key_pair(bits=2048):
     keyout = six.StringIO()
     key.write_private_key(keyout)
     private_key = keyout.getvalue()
-    public_key = '%s %s Generated-by-Nova' % (key.get_name(), key.get_base64())
+    public_key = '%s %s Generated-by-Nova' % \
+                 (key.get_name(), key.get_base64())
     fingerprint = generate_fingerprint(public_key)
     return (private_key, public_key, fingerprint)
 

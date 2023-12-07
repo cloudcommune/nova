@@ -127,11 +127,14 @@ class ComputeTaskAPI(object):
                                      request_spec, image,
                                      admin_password, injected_files,
                                      requested_networks, block_device_mapping,
-                                     tags=None):
+                                     tags=None, qos_config=None):
+        kwargs = {}
+        if qos_config is not None:
+            kwargs['qos_config'] = qos_config
         self.conductor_compute_rpcapi.schedule_and_build_instances(
             context, build_requests, request_spec, image,
             admin_password, injected_files, requested_networks,
-            block_device_mapping, tags)
+            block_device_mapping, tags, **kwargs)
 
     def unshelve_instance(self, context, instance, request_spec=None):
         self.conductor_compute_rpcapi.unshelve_instance(context,

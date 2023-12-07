@@ -338,6 +338,7 @@ class VolumeAttachmentController(wsgi.Controller):
 
         volume_id = body['volumeAttachment']['volumeId']
         device = body['volumeAttachment'].get('device')
+        readonly = body['volumeAttachment'].get('readonly', False)
         tag = body['volumeAttachment'].get('tag')
         delete_on_termination = body['volumeAttachment'].get(
             'delete_on_termination', False)
@@ -352,9 +353,12 @@ class VolumeAttachmentController(wsgi.Controller):
         try:
             supports_multiattach = common.supports_multiattach_volume(req)
             device = self.compute_api.attach_volume(
-                context, instance, volume_id, device, tag=tag,
+                context, instance, volume_id, device,
+                tag=tag,
+                disk_bus=None, device_type=None,
                 supports_multiattach=supports_multiattach,
-                delete_on_termination=delete_on_termination)
+                delete_on_termination=delete_on_termination,
+                readonly=readonly)
         except exception.VolumeNotFound as e:
             raise exc.HTTPNotFound(explanation=e.format_message())
         except (exception.InstanceIsLocked,

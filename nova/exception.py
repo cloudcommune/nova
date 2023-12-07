@@ -254,11 +254,6 @@ class TooManyDiskDevices(InvalidBDM):
     code = 403
 
 
-class InvalidBDMDiskBus(InvalidBDM):
-    msg_fmr = _("Block Device Mapping is invalid: The provided disk bus "
-                "%(disk_bus)s is not valid.")
-
-
 class InvalidAttribute(Invalid):
     msg_fmt = _("Attribute not supported: %(attr)s")
 
@@ -522,7 +517,7 @@ class ComputeResourcesUnavailable(ServiceUnavailable):
 
 
 class HypervisorUnavailable(NovaException):
-    msg_fmt = _("Connection to the hypervisor is broken on host")
+    msg_fmt = _("Connection to the hypervisor is broken on host: %(host)s")
 
 
 class ComputeServiceUnavailable(ServiceUnavailable):
@@ -618,11 +613,6 @@ class ImageUnacceptable(Invalid):
 class ImageBadRequest(Invalid):
     msg_fmt = _("Request of image %(image_id)s got BadRequest response: "
                 "%(response)s")
-
-
-class ImageQuotaExceeded(NovaException):
-    msg_fmt = _("Quota exceeded or out of space for image %(image_id)s "
-                "in the image service.")
 
 
 class InstanceUnacceptable(Invalid):
@@ -1528,6 +1518,12 @@ class InstancePasswordSetFailed(NovaException):
     safe = True
 
 
+class InstanceQemuAgentCommandFailed(NovaException):
+    msg_fmt = _("Failed to qemu agent command on %(instance)s "
+                "because %(reason)s")
+    safe = True
+
+
 class InstanceNotFound(NotFound):
     msg_fmt = _("Instance %(instance_id)s could not be found.")
 
@@ -1713,6 +1709,11 @@ class InstanceGroupIdExists(NovaException):
 class InstanceGroupMemberNotFound(NotFound):
     msg_fmt = _("Instance group %(group_uuid)s has no member with "
                 "id %(instance_id)s.")
+
+
+class InstanceGroupMemberExists(NovaException):
+    msg_fmt = _("Instance group %(group_uuid)s already has member(s) "
+                "with id %(instance_id)s.")
 
 
 class InstanceGroupSaveException(NovaException):
@@ -2035,6 +2036,11 @@ class QemuGuestAgentNotEnabled(InstanceAgentNotEnabled):
 
 class SetAdminPasswdNotSupported(Invalid):
     msg_fmt = _('Set admin password is not supported')
+    safe = True
+
+
+class QemuAgentCommandNotSupported(Invalid):
+    msg_fmt = _('Qemu agent command is not supported')
     safe = True
 
 

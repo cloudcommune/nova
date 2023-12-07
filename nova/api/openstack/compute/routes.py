@@ -62,6 +62,7 @@ from nova.api.openstack.compute import multinic
 from nova.api.openstack.compute import networks
 from nova.api.openstack.compute import networks_associate
 from nova.api.openstack.compute import pause_server
+from nova.api.openstack.compute import qemu_agent_command
 from nova.api.openstack.compute import quota_classes
 from nova.api.openstack.compute import quota_sets
 from nova.api.openstack.compute import remote_consoles
@@ -76,6 +77,7 @@ from nova.api.openstack.compute import server_migrations
 from nova.api.openstack.compute import server_password
 from nova.api.openstack.compute import server_tags
 from nova.api.openstack.compute import server_topology
+from nova.api.openstack.compute import server_volume_qos
 from nova.api.openstack.compute import servers
 from nova.api.openstack.compute import services
 from nova.api.openstack.compute import shelve
@@ -252,6 +254,7 @@ server_controller = functools.partial(_create_controller,
     [
         admin_actions.AdminActionsController,
         admin_password.AdminPasswordController,
+        qemu_agent_command.QemuAgentCommandController,
         console_output.ConsoleOutputController,
         create_backup.CreateBackupController,
         deferred_delete.DeferredDeleteController,
@@ -351,6 +354,8 @@ virtual_interfaces_controller = functools.partial(_create_controller,
 volumes_controller = functools.partial(_create_controller,
     volumes.VolumeController, [])
 
+server_volume_qos_controller = functools.partial(_create_controller,
+    server_volume_qos.ServerVolumeQosController, [])
 
 # NOTE(alex_xu): This is structure of this route list as below:
 # (
@@ -677,6 +682,9 @@ ROUTE_LIST = (
         'GET': [server_groups_controller, 'show'],
         'DELETE': [server_groups_controller, 'delete']
     }),
+    ('/os-server-groups/{id}/action', {
+        'POST': [server_groups_controller, 'action']
+    }),
     ('/os-services', {
         'GET': [services_controller, 'index']
     }),
@@ -838,6 +846,11 @@ ROUTE_LIST = (
     ('/servers/{server_id}/topology', {
         'GET': [server_topology_controller, 'index']
     }),
+    ('/servers/{server_id}/volume-qos', {
+        'GET': [server_volume_qos_controller, 'index'],
+        'POST': [server_volume_qos_controller, 'set']
+    }),
+
 )
 
 

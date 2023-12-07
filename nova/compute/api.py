@@ -187,34 +187,13 @@ def reject_instance_state(vm_state=None, task_state=None):
     return outer
 
 
-def check_instance_host(check_is_up=False):
-    """Validate the instance.host before performing the operation.
-
-    At a minimum this method will check that the instance.host is set.
-
-    :param check_is_up: If True, check that the instance.host status is UP
-        or MAINTENANCE (disabled but not down).
-    :raises: InstanceNotReady if the instance.host is not set
-    :raises: ServiceUnavailable if check_is_up=True and the instance.host
-        compute service status is not UP or MAINTENANCE
-    """
-    def outer(function):
-        @six.wraps(function)
-        def wrapped(self, context, instance, *args, **kwargs):
-            if not instance.host:
-                raise exception.InstanceNotReady(instance_id=instance.uuid)
-            if check_is_up:
-                # Make sure the source compute service is not down otherwise we
-                # cannot proceed.
-                host_status = self.get_instance_host_status(instance)
-                if host_status not in (fields_obj.HostStatus.UP,
-                                       fields_obj.HostStatus.MAINTENANCE):
-                    # ComputeServiceUnavailable would make more sense here but
-                    # we do not want to leak hostnames to end users.
-                    raise exception.ServiceUnavailable()
-            return function(self, context, instance, *args, **kwargs)
-        return wrapped
-    return outer
+def check_instance_host(function):
+    @six.wraps(function)
+    def wrapped(self, context, instance, *args, **kwargs):
+        if not instance.host:
+            raise exception.InstanceNotReady(instance_id=instance.uuid)
+        return function(self, context, instance, *args, **kwargs)
+    return wrapped
 
 
 def check_instance_lock(function):
@@ -577,31 +556,6 @@ class API(base.Base):
                                              root_bdm, validate_numa)
 
     @staticmethod
-    def _detect_nonbootable_image_from_properties(image_id, image):
-        """Check image for a property indicating it's nonbootable.
-
-        This is called from the API service to ensure that there are
-        no known image properties indicating that this image is of a
-        type that we do not support booting from.
-
-        Currently the only such property is 'cinder_encryption_key_id'.
-
-        :param image_id: UUID of the image
-        :param image: a dict representation of the image including properties
-        :raises: ImageUnacceptable if the image properties indicate
-                 that booting this image is not supported
-        """
-        if not image:
-            return
-
-        image_properties = image.get('properties', {})
-        if image_properties.get('cinder_encryption_key_id'):
-            reason = _('Direct booting of an image uploaded from an '
-                       'encrypted volume is unsupported.')
-            raise exception.ImageUnacceptable(image_id=image_id,
-                                              reason=reason)
-
-    @staticmethod
     def _validate_flavor_image_nostatus(context, image, instance_type,
                                         root_bdm, validate_numa=True,
                                         validate_pci=False):
@@ -901,7 +855,6 @@ class API(base.Base):
                                        validate_numa=True):
         self._check_metadata_properties_quota(context, metadata)
         self._check_injected_file_quota(context, files_to_inject)
-        self._detect_nonbootable_image_from_properties(image_id, image)
         self._validate_flavor_image(context, image_id, image,
                                     instance_type, root_bdm,
                                     validate_numa=validate_numa)
@@ -1389,6 +1342,18 @@ class API(base.Base):
                       'max_net_count': max_net_count})
             max_count = max_net_count
 
+        qos_config = []
+        for _bdm in block_device_mapping:
+            if _bdm.get('qos_specs'):
+                qos_config.append({
+                    'volume_id': _bdm.get('volume_id'),
+                    'qos_specs': _bdm.get('qos_specs')
+                })
+        kwargs = {}
+        if qos_config:
+            kwargs = {'qos_config': qos_config}
+        LOG.debug("Set volume qos in _create_instance with qos_config: %s",
+                  qos_config)
         block_device_mapping = self._check_and_transform_bdm(context,
             base_options, instance_type, boot_meta, min_count, max_count,
             block_device_mapping, legacy_bdm)
@@ -1432,7 +1397,7 @@ class API(base.Base):
             injected_files=injected_files,
             requested_networks=requested_networks,
             block_device_mapping=block_device_mapping,
-            tags=tags)
+            tags=tags, **kwargs)
 
         return instances, reservation_id
 
@@ -1630,7 +1595,8 @@ class API(base.Base):
                 try:
                     volume = self.volume_api.get(context, volume_id)
                     self._check_attach_and_reserve_volume(
-                        context, volume, instance, bdm, supports_multiattach)
+                        context, volume, instance, bdm,
+                        supports_multiattach)
                     bdm.volume_size = volume.get('size')
 
                     # NOTE(mnaser): If we end up reserving the volume, it will
@@ -1663,13 +1629,6 @@ class API(base.Base):
                 raise exception.InvalidBDM(message=_("Blank volumes "
                     "(source: 'blank', dest: 'volume') need to have non-zero "
                     "size"))
-
-            # NOTE(lyarwood): Ensure the disk_bus is at least known to Nova.
-            # The virt driver may reject this later but for now just ensure
-            # it's listed as an acceptable value of the DiskBus field class.
-            disk_bus = bdm.disk_bus if 'disk_bus' in bdm else None
-            if disk_bus and disk_bus not in fields_obj.DiskBus.ALL:
-                raise exception.InvalidBDMDiskBus(disk_bus=disk_bus)
 
         ephemeral_size = sum(bdm.volume_size or instance_type['ephemeral_gb']
                 for bdm in block_device_mappings
@@ -2451,14 +2410,14 @@ class API(base.Base):
                                           clean_shutdown=clean_shutdown)
 
     @check_instance_lock
-    @check_instance_host()
+    @check_instance_host
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.ERROR])
     def stop(self, context, instance, do_cast=True, clean_shutdown=True):
         """Stop an instance."""
         self.force_stop(context, instance, do_cast, clean_shutdown)
 
     @check_instance_lock
-    @check_instance_host()
+    @check_instance_host
     @check_instance_state(vm_state=[vm_states.STOPPED])
     def start(self, context, instance):
         """Start an instance."""
@@ -2471,7 +2430,7 @@ class API(base.Base):
         self.compute_rpcapi.start_instance(context, instance)
 
     @check_instance_lock
-    @check_instance_host()
+    @check_instance_host
     @check_instance_state(vm_state=vm_states.ALLOW_TRIGGER_CRASH_DUMP)
     def trigger_crash_dump(self, context, instance):
         """Trigger crash dump in an instance."""
@@ -3081,7 +3040,7 @@ class API(base.Base):
     # NOTE(melwitt): We don't check instance lock for snapshot because lock is
     #                intended to prevent accidental change/delete of instances
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED,
-                                    vm_states.PAUSED, vm_states.SUSPENDED])
+                                    vm_states.SUSPENDED])
     def snapshot_volume_backed(self, context, instance, name,
                                extra_properties=None):
         """Snapshot the given volume-backed instance.
@@ -3353,12 +3312,6 @@ class API(base.Base):
         self._checks_for_create_and_rebuild(context, image_id, image,
                 flavor, metadata, files_to_inject, root_bdm)
 
-        # Check the state of the volume. If it is not in-use, an exception
-        # will occur when creating attachment during reconstruction,
-        # resulting in the failure of reconstruction and the instance
-        # turning into an error state.
-        self._check_volume_status(context, bdms)
-
         # NOTE(sean-k-mooney): When we rebuild with a new image we need to
         # validate that the NUMA topology does not change as we do a NOOP claim
         # in resource tracker. As such we cannot allow the resource usage or
@@ -3457,17 +3410,6 @@ class API(base.Base):
                 orig_sys_metadata=orig_sys_metadata, bdms=bdms,
                 preserve_ephemeral=preserve_ephemeral, host=host,
                 request_spec=request_spec)
-
-    def _check_volume_status(self, context, bdms):
-        """Check whether the status of the volume is "in-use".
-
-        :param context: A context.RequestContext
-        :param bdms: BlockDeviceMappingList of BDMs for the instance
-        """
-        for bdm in bdms:
-            if bdm.volume_id:
-                vol = self.volume_api.get(context, bdm.volume_id)
-                self.volume_api.check_attached(context, vol)
 
     @staticmethod
     def _validate_numa_rebuild(instance, image, flavor):
@@ -3573,22 +3515,15 @@ class API(base.Base):
             availability_zones.get_host_availability_zone(
                 context, migration.source_compute))
 
-        # If this was a resize, the conductor may have updated the
-        # RequestSpec.flavor field (to point at the new flavor) and the
-        # RequestSpec.numa_topology field (to reflect the new flavor's extra
-        # specs) during the initial resize operation, so we need to update the
-        # RequestSpec to point back at the original flavor and reflect the NUMA
-        # settings of this flavor, otherwise subsequent move operations through
-        # the scheduler will be using the wrong values. There's no need to do
-        # this if the flavor hasn't changed though and we're migrating rather
-        # than resizing.
+        # Conductor updated the RequestSpec.flavor during the initial resize
+        # operation to point at the new flavor, so we need to update the
+        # RequestSpec to point back at the original flavor, otherwise
+        # subsequent move operations through the scheduler will be using the
+        # wrong flavor.
         reqspec = objects.RequestSpec.get_by_instance_uuid(
             context, instance.uuid)
-        if reqspec.flavor['id'] != instance.old_flavor['id']:
-            reqspec.flavor = instance.old_flavor
-            reqspec.numa_topology = hardware.numa_get_constraints(
-                instance.old_flavor, instance.image_meta)
-            reqspec.save()
+        reqspec.flavor = instance.old_flavor
+        reqspec.save()
 
         # NOTE(gibi): This is a performance optimization. If the network info
         # cache does not have ports with allocations in the binding profile
@@ -3657,7 +3592,6 @@ class API(base.Base):
     # it explicitly an auto_disk_config param
     @check_instance_lock
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
-    @check_instance_host(check_is_up=True)
     def resize(self, context, instance, flavor_id=None, clean_shutdown=True,
                host_name=None, **extra_instance_updates):
         """Resize (ie, migrate) a running instance.
@@ -3755,11 +3689,6 @@ class API(base.Base):
         request_spec = objects.RequestSpec.get_by_instance_uuid(
             context, instance.uuid)
         request_spec.ignore_hosts = filter_properties['ignore_hosts']
-
-        # don't recalculate the NUMA topology unless the flavor has changed
-        if not same_instance_type:
-            request_spec.numa_topology = hardware.numa_get_constraints(
-                new_instance_type, instance.image_meta)
 
         instance.task_state = task_states.RESIZE_PREP
         instance.progress = 0
@@ -3948,12 +3877,12 @@ class API(base.Base):
         self._record_action_start(context, instance, instance_actions.UNPAUSE)
         self.compute_rpcapi.unpause_instance(context, instance)
 
-    @check_instance_host()
+    @check_instance_host
     def get_diagnostics(self, context, instance):
         """Retrieve diagnostics for the given instance."""
         return self.compute_rpcapi.get_diagnostics(context, instance=instance)
 
-    @check_instance_host()
+    @check_instance_host
     def get_instance_diagnostics(self, context, instance):
         """Retrieve diagnostics for the given instance."""
         return self.compute_rpcapi.get_instance_diagnostics(context,
@@ -3987,8 +3916,10 @@ class API(base.Base):
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                     context, instance.uuid)
-        self._check_volume_status(context, bdms)
-
+        for bdm in bdms:
+            if bdm.volume_id:
+                vol = self.volume_api.get(context, bdm.volume_id)
+                self.volume_api.check_attached(context, vol)
         if compute_utils.is_volume_backed_instance(context, instance, bdms):
             reason = _("Cannot rescue a volume-backed instance")
             raise exception.InstanceNotRescuable(instance_id=instance.uuid,
@@ -4033,7 +3964,26 @@ class API(base.Base):
                                                instance=instance,
                                                new_pass=password)
 
-    @check_instance_host()
+    @check_instance_lock
+    @check_instance_host
+    @check_instance_state(vm_state=[vm_states.ACTIVE])
+    def qemu_agent_command(self, context, instance, execute, arguments):
+        """use qemu agent command for the given instance.
+
+        @param context: Nova auth context.
+        @param instance: Nova instance object.
+        @param execute: qemu agent command, use execute "guest-info"
+                        can get the execute command list.
+        @param arguments: qemu agent command arguments
+        """
+        self._record_action_start(context, instance,
+                                  instance_actions.QEMU_AGENT_COMMAND)
+        return self.compute_rpcapi.qemu_agent_command(context,
+                                                      instance=instance,
+                                                      execute=execute,
+                                                      arguments=arguments)
+
+    @check_instance_host
     @reject_instance_state(
         task_state=[task_states.DELETING, task_states.MIGRATING])
     def get_vnc_console(self, context, instance, console_type):
@@ -4042,7 +3992,7 @@ class API(base.Base):
                 instance=instance, console_type=console_type)
         return {'url': connect_info['access_url']}
 
-    @check_instance_host()
+    @check_instance_host
     @reject_instance_state(
         task_state=[task_states.DELETING, task_states.MIGRATING])
     def get_spice_console(self, context, instance, console_type):
@@ -4051,7 +4001,7 @@ class API(base.Base):
                 instance=instance, console_type=console_type)
         return {'url': connect_info['access_url']}
 
-    @check_instance_host()
+    @check_instance_host
     @reject_instance_state(
         task_state=[task_states.DELETING, task_states.MIGRATING])
     def get_rdp_console(self, context, instance, console_type):
@@ -4060,7 +4010,7 @@ class API(base.Base):
                 instance=instance, console_type=console_type)
         return {'url': connect_info['access_url']}
 
-    @check_instance_host()
+    @check_instance_host
     @reject_instance_state(
         task_state=[task_states.DELETING, task_states.MIGRATING])
     def get_serial_console(self, context, instance, console_type):
@@ -4069,7 +4019,7 @@ class API(base.Base):
                 instance=instance, console_type=console_type)
         return {'url': connect_info['access_url']}
 
-    @check_instance_host()
+    @check_instance_host
     @reject_instance_state(
         task_state=[task_states.DELETING, task_states.MIGRATING])
     def get_mks_console(self, context, instance, console_type):
@@ -4078,7 +4028,7 @@ class API(base.Base):
                 instance=instance, console_type=console_type)
         return {'url': connect_info['access_url']}
 
-    @check_instance_host()
+    @check_instance_host
     def get_console_output(self, context, instance, tail_length=None):
         """Get console output for an instance."""
         return self.compute_rpcapi.get_console_output(context,
@@ -4197,17 +4147,25 @@ class API(base.Base):
            if it does.
         """
 
-        try:
-            objects.BlockDeviceMapping.get_by_volume_and_instance(
-                context, volume_id, instance.uuid)
+        volume = self.volume_api.get_detal(context, volume_id)
+        attachment_num = 0
+        for attachments in volume.attachments:
+            if attachments['server_id'] == instance.uuid:
+                msg = _("volume %s already attached") % volume_id
+                raise exception.InvalidVolume(reason=msg)
+            attachment_num = attachment_num + 1
 
-            msg = _("volume %s already attached") % volume_id
+        multiattach = getattr(volume, 'multiattach', False)
+        LOG.debug('multiattach=%d', multiattach)
+        LOG.debug('attachment_num=%d', attachment_num)
+        if not multiattach and attachment_num >= 1:
+            msg = _("volume %s not support multiattach") % volume_id
             raise exception.InvalidVolume(reason=msg)
-        except exception.VolumeBDMNotFound:
-            pass
 
     def _check_attach_and_reserve_volume(self, context, volume, instance,
-                                         bdm, supports_multiattach=False):
+                                         bdm,
+                                         supports_multiattach=False,
+                                         attach_mode='rw'):
         volume_id = volume['id']
         self.volume_api.check_availability_zone(context, volume,
                                                 instance=instance)
@@ -4216,8 +4174,10 @@ class API(base.Base):
         if volume['multiattach'] and not supports_multiattach:
             raise exception.MultiattachNotSupportedOldMicroversion()
 
+        self._check_volume_already_attached_to_instance(context, instance,
+                                                        volume_id)
         attachment_id = self.volume_api.attachment_create(
-            context, volume_id, instance.uuid)['id']
+            context, volume_id, instance.uuid, attach_mode)['id']
         bdm.attachment_id = attachment_id
         # NOTE(ildikov): In case of boot from volume the BDM at this
         # point is not yet created in a cell database, so we can't
@@ -4233,20 +4193,26 @@ class API(base.Base):
     def _attach_volume(self, context, instance, volume, device,
                        disk_bus, device_type, tag=None,
                        supports_multiattach=False,
-                       delete_on_termination=False):
+                       delete_on_termination=False,
+                       readonly=False):
         """Attach an existing volume to an existing instance.
 
         This method is separated to make it possible for cells version
         to override it.
         """
         volume_bdm = self._create_volume_bdm(
-            context, instance, device, volume, disk_bus=disk_bus,
+            context, instance, device,
+            volume, disk_bus=disk_bus,
             device_type=device_type, tag=tag,
             delete_on_termination=delete_on_termination)
         try:
+            attach_mode = 'rw'
+            if readonly:
+                attach_mode = 'ro'
             self._check_attach_and_reserve_volume(context, volume, instance,
                                                   volume_bdm,
-                                                  supports_multiattach)
+                                                  supports_multiattach,
+                                                  attach_mode=attach_mode)
             self._record_action_start(
                 context, instance, instance_actions.ATTACH_VOLUME)
             self.compute_rpcapi.attach_volume(context, instance, volume_bdm)
@@ -4312,7 +4278,8 @@ class API(base.Base):
     def attach_volume(self, context, instance, volume_id, device=None,
                       disk_bus=None, device_type=None, tag=None,
                       supports_multiattach=False,
-                      delete_on_termination=False):
+                      delete_on_termination=False,
+                      readonly=False):
         """Attach an existing volume to an existing instance."""
         # NOTE(vish): Fail fast if the device is not going to pass. This
         #             will need to be removed along with the test if we
@@ -4359,7 +4326,8 @@ class API(base.Base):
         return self._attach_volume(context, instance, volume, device,
                                    disk_bus, device_type, tag=tag,
                                    supports_multiattach=supports_multiattach,
-                                   delete_on_termination=delete_on_termination)
+                                   delete_on_termination=delete_on_termination,
+                                   readonly=readonly)
 
     # TODO(stephenfin): Fold this back in now that cells v1 no longer needs to
     # override it.
@@ -4522,8 +4490,11 @@ class API(base.Base):
 
             # This is a new-style attachment so for the volume that we are
             # going to swap to, create a new volume attachment.
+            attach_mode = self.volume_api.attachment_get(context,
+                bdm.attachment_id)['attach_mode']
             new_attachment_id = self.volume_api.attachment_create(
-                context, new_volume['id'], instance.uuid)['id']
+                context, new_volume['id'], instance.uuid,
+                attach_mode)['id']
 
         self._record_action_start(
             context, instance, instance_actions.SWAP_VOLUME)
@@ -4900,7 +4871,7 @@ class API(base.Base):
 
         # We allow creating the snapshot in any vm_state as long as there is
         # no task being performed on the instance and it has a host.
-        @check_instance_host()
+        @check_instance_host
         @check_instance_state(vm_state=None)
         def do_volume_snapshot_create(self, context, instance):
             self.compute_rpcapi.volume_snapshot_create(context, instance,
@@ -4922,7 +4893,7 @@ class API(base.Base):
 
         # We allow deleting the snapshot in any vm_state as long as there is
         # no task being performed on the instance and it has a host.
-        @check_instance_host()
+        @check_instance_host
         @check_instance_state(vm_state=None)
         def do_volume_snapshot_delete(self, context, instance):
             self.compute_rpcapi.volume_snapshot_delete(context, instance,
@@ -5045,6 +5016,13 @@ class API(base.Base):
             host_statuses[instance.uuid] = host_status
         return host_statuses
 
+    def get_volume_qos(self, context, instance):
+        return self.compute_rpcapi.get_volume_qos(context, instance=instance)
+
+    def set_volume_qos(self, context, instance, qos_config):
+        LOG.debug("Set instance %s volume qos: %s", instance.uuid, qos_config)
+        return self.compute_rpcapi.set_volume_qos(context, instance=instance,
+                                                  qos_config=qos_config)
 
 def target_host_cell(fn):
     """Target a host-based function to a cell.

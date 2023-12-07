@@ -124,7 +124,6 @@ def add_command_parsers(subparsers, categories):
         parser.set_defaults(command_object=command_object)
 
         category_subparsers = parser.add_subparsers(dest='action')
-        category_subparsers.required = True
 
         for (action, action_fn) in methods_of(command_object):
             parser = category_subparsers.add_parser(

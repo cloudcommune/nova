@@ -371,42 +371,6 @@ class ServerGroupTestV21(ServerGroupTestBase):
         self.assertNotEqual(servers[0]['OS-EXT-SRV-ATTR:host'],
                             migrated_server['OS-EXT-SRV-ATTR:host'])
 
-    def test_migrate_with_anti_affinity_confirm_updates_scheduler(self):
-        # Start additional host to test migration with anti-affinity
-        compute3 = self.start_service('compute', host='host3')
-
-        # make sure that compute syncing instance info to scheduler
-        # this tells the scheduler that it can expect such updates periodically
-        # and don't have to look into the db for it at the start of each
-        # scheduling
-        for compute in [self.compute, self.compute2, compute3]:
-            compute.manager._sync_scheduler_instance_info(
-                context.get_admin_context())
-
-        created_group = self.api.post_server_groups(self.anti_affinity)
-        servers = self._boot_servers_to_group(created_group)
-
-        post = {'migrate': {}}
-        self.admin_api.post_server_action(servers[1]['id'], post)
-        migrated_server = self._wait_for_state_change(
-            self.admin_api, servers[1], 'VERIFY_RESIZE')
-
-        self.assertNotEqual(servers[0]['OS-EXT-SRV-ATTR:host'],
-                            migrated_server['OS-EXT-SRV-ATTR:host'])
-
-        # We have 3 hosts, so after the move is confirmed one of the hosts
-        # should be considered empty so we could boot a 3rd server on that host
-        post = {'confirmResize': {}}
-        self.admin_api.post_server_action(servers[1]['id'], post)
-        self._wait_for_state_change(self.admin_api, servers[1], 'ACTIVE')
-
-        server3 = self._boot_a_server_to_group(created_group)
-
-        # we have 3 servers that should occupy 3 different hosts
-        hosts = {server['OS-EXT-SRV-ATTR:host']
-                 for server in [servers[0], migrated_server, server3]}
-        self.assertEqual(3, len(hosts))
-
     def test_resize_to_same_host_with_anti_affinity(self):
         self.flags(allow_resize_to_same_host=True)
         created_group = self.api.post_server_groups(self.anti_affinity)

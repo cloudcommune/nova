@@ -384,7 +384,7 @@ class ComputeTaskAPI(object):
                                      image, admin_password, injected_files,
                                      requested_networks,
                                      block_device_mapping,
-                                     tags=None):
+                                     tags=None, qos_config=None):
         version = '1.17'
         kw = {'build_requests': build_requests,
               'request_specs': request_specs,
@@ -394,6 +394,8 @@ class ComputeTaskAPI(object):
               'requested_networks': requested_networks,
               'block_device_mapping': block_device_mapping,
               'tags': tags}
+        if qos_config is not None:
+            kw['qos_config'] = qos_config
 
         if not self.client.can_send_version(version):
             version = '1.16'

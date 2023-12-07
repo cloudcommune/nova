@@ -1,6 +1,3 @@
-# Copyright 2016 Mirantis Inc
-# All Rights Reserved.
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,13 +10,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nova.api.openstack import common
+from nova.api.validation import parameter_types
 
-
-class ViewBuilder(common.ViewBuilder):
-
-    _collection_name = "keypairs"
-
-    def get_links(self, request, keypairs):
-        return self._get_collection_links(request, keypairs,
-                                          self._collection_name, 'name')
+qemu_agent_command = {
+    'type': 'object',
+    'properties': {
+        'qemuAgentCommand': {
+            'type': 'object',
+            'properties': {
+                'execute': parameter_types.qemu_agent_command_execute,
+                'arguments': parameter_types.qemu_agent_command_arguments,
+            },
+            'required': ['execute'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['qemuAgentCommand'],
+    'additionalProperties': False,
+}
